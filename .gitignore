@@ -6,4 +6,4 @@
 /docs/site/
 *.csv
 *.db
-
+*.DS_Store
