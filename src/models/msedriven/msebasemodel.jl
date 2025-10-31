@@ -55,7 +55,7 @@ struct MSEDrivenBaseModel{Fl<:Real,Fβ<:Real,Fγ<:Real} <: AbstractYieldFactorMo
         duplicator::Vector{Int}, random_walk::Bool,
         specific_transformations::Vector{Function},
         specific_untransformations::Vector{Function},
-        A_guesses::Vector{Fl}, B_guesses::Vector{Fl}, model_string;
+        A_guesses::Vector{Fl}, B_guesses::Vector{Fl}, model_string; results_location::String = "results/",
         scale_grad::Bool = false,
         forget_factor::Fl = Fl(0.9)
     ) where {Fl<:Real}
@@ -89,7 +89,7 @@ struct MSEDrivenBaseModel{Fl<:Real,Fβ<:Real,Fγ<:Real} <: AbstractYieldFactorMo
         ]
 
         init_folder    = "YieldFactorModels.jl/initializations/$(model_string)/"
-        results_folder = "YieldFactorModels.jl/results/$(model_string)/"
+        results_folder = results_location #"YieldFactorModels.jl/results/$(model_string)/"
 
         # Allocate EWMA accumulator and update counter for gradient scaling
         grad_EWMA = zeros(Fl, L)

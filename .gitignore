@@ -6,4 +6,8 @@
 /docs/site/
 *.csv
 *.db
+*/db
 *.DS_Store
+*.png
+**/*.csv
+**/*.sqlite3

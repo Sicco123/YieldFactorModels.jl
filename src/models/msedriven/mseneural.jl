@@ -25,6 +25,7 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
                                activation_func = tanh,
                                bias_bool = false,
                                model_string::String = "MSEDNeural",
+                               results_location::String = "results/",
                                scale_grad::Bool = false,
                                forget_factor::T = T(0.9)) where T<:Real
         
@@ -87,7 +88,7 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
         base = MSEDrivenBaseModel{T}(maturities, N, M, L, duplicator, random_walk,
                                      specific_transformations, specific_untransformations,
                                      A_guesses, B_guesses, model_string;
-                                     scale_grad=scale_grad, forget_factor=forget_factor)
+                                     scale_grad=scale_grad, forget_factor=forget_factor, results_location=results_location)
 
 
 

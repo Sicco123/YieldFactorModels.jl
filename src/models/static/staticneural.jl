@@ -20,7 +20,7 @@ mutable struct StaticNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: Abstra
     dual_net_cache::Base.RefValue{Dict{DataType,NamedTuple}}
 
     # Constructor
-    function StaticNeuralModel{T}(maturities::Vector{T}, N::Int, M::Int; net_size = 3, activation_func = tanh, bias_bool = false, model_string::String = "NNS") where T<:Real
+    function StaticNeuralModel{T}(maturities::Vector{T}, N::Int, M::Int; net_size = 3, activation_func = tanh, bias_bool = false, model_string::String = "NNS", results_location::String = "results/") where T<:Real
         
         specific_transformations = Function[]
         specific_untransformations = Function[]
@@ -48,7 +48,7 @@ mutable struct StaticNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: Abstra
         append!(specific_untransformations, fill(identity, net_size*3*2))
         
         # Create base model with duplicator
-        base = StaticBaseModel{T}(maturities, N, M, L,  specific_transformations, specific_untransformations, model_string)
+        base = StaticBaseModel{T}(maturities, N, M, L,  specific_transformations, specific_untransformations, model_string; results_location=results_location)
 
 
 

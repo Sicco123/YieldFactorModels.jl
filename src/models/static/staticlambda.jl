@@ -8,7 +8,7 @@ struct StaticλModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractStaticλMo
     lambda::Fl
 
     # Constructor
-    function StaticλModel{T}(maturities::Vector{T}, N::Int, M::Int;  model_string::String = "NS") where T<:Real
+    function StaticλModel{T}(maturities::Vector{T}, N::Int, M::Int;  model_string::String = "NS", results_location::String = "results/") where T<:Real
 
         specific_transformations = Function[]
         specific_untransformations = Function[]
@@ -20,7 +20,7 @@ struct StaticλModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractStaticλMo
         L = 1  # Lambda model has 1 factor loading parameter
 
         # Create base model
-        base = StaticBaseModel{T}(maturities, N, M, L, specific_transformations, specific_untransformations, model_string)
+        base = StaticBaseModel{T}(maturities, N, M, L, specific_transformations, specific_untransformations, model_string; results_location=results_location)
 
         lambda = T(0.0)
 

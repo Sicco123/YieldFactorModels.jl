@@ -48,8 +48,10 @@ end
 function filter(m::AbstractMSEDrivenModel, y::Vector{T}, cache) where T<:Real
 
     if isnan(y[1])
-        m.base.gamma .= m.base.nu .+ m.base.B .* m.base.gamma
-        update_factor_loadings!(m, m.base.gamma, m.base.Z)
+        if !isempty(m.base.B)
+            m.base.gamma .= m.base.nu .+ m.base.B .* m.base.gamma
+            update_factor_loadings!(m, m.base.gamma, m.base.Z)
+        end
         m.base.beta .= m.base.mu  .+ m.base.Phi * m.base.beta
         return m.base.Z * m.base.beta
     end
@@ -78,8 +80,8 @@ function filter(m::AbstractMSEDrivenModel, y::Vector{T}, cache) where T<:Real
     # 4) Predictions 
     if !isempty(m.base.B)
         m.base.gamma .= m.base.nu .+ m.base.B .* m.base.gamma
+        update_factor_loadings!(m, m.base.gamma, m.base.Z)
     end
-    update_factor_loadings!(m, m.base.gamma, m.base.Z)
     m.base.beta .= m.base.mu  .+ m.base.Phi * m.base.beta
 
     return m.base.Z * m.base.beta
@@ -102,6 +104,16 @@ function filter(m::AbstractStaticModel, y::Vector{T}, cache) where T<:Real
     # 4) Predictions 
     m.base.beta .= m.base.mu  .+ m.base.Phi * m.base.beta
     return m.base.Z * m.base.beta
+end
+
+function filter(m::AbstractRandomWalkModel, y::Vector{T}, cache) where T<:Real
+    if isnan(y[1])
+        return copy(m.last_y)
+    end
+
+    m.last_y .= y
+    println(m.last_y)
+    return copy(m.last_y)
 end
 
 function get_β_OLS!(beta, Z, y)

@@ -10,6 +10,7 @@ struct MSEDλModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractλMSEDrivenM
     # Constructor
     function MSEDλModel{T}(maturities::Vector{T}, N::Int, M::Int, random_walk::Bool;
                            model_string::String = "MSEDλ",
+                           results_location::String = "results/",
                            scale_grad::Bool = false,
                            forget_factor::T = T(0.98)) where T<:Real
 
@@ -36,7 +37,7 @@ struct MSEDλModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractλMSEDrivenM
         base = MSEDrivenBaseModel{T}(maturities, N, M, L, duplicator, random_walk,
                                      specific_transformations, specific_untransformations,
                                      A_guesses, B_guesses, model_string;
-                                     scale_grad=scale_grad, forget_factor=forget_factor)
+                                     scale_grad=scale_grad, forget_factor=forget_factor, results_location=results_location)
 
         lambda = T(0.0)
 

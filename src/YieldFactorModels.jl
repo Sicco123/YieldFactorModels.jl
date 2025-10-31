@@ -33,6 +33,7 @@ module YieldFactorModels
     include("models/static/staticbasemodel.jl")
     include("models/static/staticneural.jl")
     include("models/static/staticlambda.jl")
+    include("models/static/randomwalk.jl")
     include("models/static/paramteroperations.jl")
     include("models/filter.jl")
 
@@ -79,13 +80,15 @@ module YieldFactorModels
     
     Configure data folder and results location paths based on simulation settings.
     """
-    function setup_data_paths(model_type::String, simulation::Bool, scratch_dir::String, thread_id::String)
+    function setup_data_paths( model_type::String, simulation::Bool, scratch_dir::String, thread_id::String)
         if simulation
-            data_folder = "$(scratch_dir)/YieldFactorModels.jl/data_simulation/"
-            results_location = "$(scratch_dir)/YieldFactorModels.jl/results_simulation/thread_id__$(thread_id)/"
+            data_folder = "$(scratch_dir)YieldFactorModels.jl/data_simulation/"
+            results_location = "$(scratch_dir)YieldFactorModels.jl/results_simulation/thread_id__$(thread_id)/"
+           
         else
-            data_folder = "$(scratch_dir)/YieldFactorModels.jl/data/"
-            results_location = "$(scratch_dir)/YieldFactorModels.jl/results/thread_id__$(thread_id)/"
+            data_folder = "$(scratch_dir)YieldFactorModels.jl/data/"
+            results_location = "$(scratch_dir)YieldFactorModels.jl/results/thread_id__$(thread_id)/"
+            
         end
         return data_folder, results_location
     end
@@ -96,7 +99,7 @@ module YieldFactorModels
     Initialize the appropriate model based on model_type specification.
     Returns the initialized model and the standardized model_type string.
     """
-    function create_model(model_type::String, maturities::Vector, N::Int, M::Int, float_type::Type)
+    function create_model(model_type::String, maturities::Vector, N::Int, M::Int, float_type::Type, results_location::String)
         # covert maturities 
         maturities = convert(Vector{float_type}, maturities)
         # Model type mapping and initialization
@@ -105,56 +108,56 @@ module YieldFactorModels
         elseif model_type == "TVλ" || model_type == "1"
             model = nothing
         elseif model_type == "NS" || model_type == "2"
-            model = StaticλModel{float_type}(maturities, N, M; model_string=model_type)
+            model = StaticλModel{float_type}(maturities, N, M; model_string=model_type, results_location=results_location)
         elseif model_type == "NNS" || model_type == "3"
-            model = StaticNeuralModel{float_type}(maturities, N, M; model_string=model_type)
+            model = StaticNeuralModel{float_type}(maturities, N, M; model_string=model_type, results_location=results_location)
         elseif model_type == "SD-NS" || model_type == "4"
-            model = MSEDλModel{float_type}(maturities, N, M, false; model_string=model_type)
+            model = MSEDλModel{float_type}(maturities, N, M, false; model_string=model_type, results_location=results_location)
             model_type = "SD-NS"
         elseif model_type == "RWSD-NS" || model_type == "5"
-            model = MSEDλModel{float_type}(maturities, N, M, true; model_string=model_type)
+            model = MSEDλModel{float_type}(maturities, N, M, true; model_string=model_type, results_location=results_location)
             model_type = "RWSD-NS"
         elseif model_type == "SSD-NS" || model_type == "6"
-            model = MSEDλModel{float_type}(maturities, N, M, false; model_string=model_type, scale_grad=true)
+            model = MSEDλModel{float_type}(maturities, N, M, false; model_string=model_type, scale_grad=true, results_location=results_location)
             model_type = "SSD-NS"
         elseif model_type == "SRWSD-NS" || model_type == "7"
-            model = MSEDλModel{float_type}(maturities, N, M, true; model_string=model_type, scale_grad=true)
+            model = MSEDλModel{float_type}(maturities, N, M, true; model_string=model_type, scale_grad=true, results_location=results_location)
             model_type = "SRWSD-NS"
         elseif model_type == "1SD-NNS" || model_type == "8"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "scalar", false; model_string=model_type)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "scalar", false; model_string=model_type, results_location=results_location)
             model_type = "1SD-NNS"
         elseif model_type == "1RWSD-NNS" || model_type == "9"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "scalar", true; model_string=model_type)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "scalar", true; model_string=model_type, results_location=results_location)
             model_type = "1RWSD-NNS"
         elseif model_type == "2SD-NNS" || model_type == "10"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "block_diag", false; model_string=model_type)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "block_diag", false; model_string=model_type, results_location=results_location)
             model_type = "2SD-NNS"
         elseif model_type == "2RWSD-NNS" || model_type == "11"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "block_diag", true; model_string=model_type)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "block_diag", true; model_string=model_type, results_location=results_location)
             model_type = "2RWSD-NNS"
         elseif model_type == "3SD-NNS" || model_type == "12"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "diag", false; model_string=model_type)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "diag", false; model_string=model_type, results_location=results_location)
             model_type = "3SD-NNS"
         elseif model_type == "3RWSD-NNS" || model_type == "13"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "diag", true; model_string=model_type)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "diag", true; model_string=model_type, results_location=results_location)
             model_type = "3RWSD-NNS"
         elseif model_type == "1SSD-NNS" || model_type == "14"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "scalar", false; model_string=model_type, scale_grad=true)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "scalar", false; model_string=model_type, scale_grad=true, results_location=results_location)
             model_type = "1SSD-NNS"
         elseif model_type == "1SRWSD-NNS" || model_type == "15"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "scalar", true; model_string=model_type, scale_grad=true)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "scalar", true; model_string=model_type, scale_grad=true, results_location=results_location)
             model_type = "1SRWSD-NNS"
         elseif model_type == "2SSD-NNS" || model_type == "16"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "block_diag", false; model_string=model_type, scale_grad=true)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "block_diag", false; model_string=model_type, scale_grad=true, results_location=results_location)
             model_type = "2SSD-NNS"
         elseif model_type == "2SRWSD-NNS" || model_type == "17"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "block_diag", true; model_string=model_type, scale_grad=true)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "block_diag", true; model_string=model_type, scale_grad=true, results_location=results_location)
             model_type = "2SRWSD-NNS"
         elseif model_type == "3SSD-NNS" || model_type == "18"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "diag", false; model_string=model_type, scale_grad=true)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "diag", false; model_string=model_type, scale_grad=true, results_location=results_location)
             model_type = "3SSD-NNS"
         elseif model_type == "3SRWSD-NNS" || model_type == "19"
-            model = MSEDNeuralModel{float_type}(maturities, N, M, "diag", true; model_string=model_type, scale_grad=true)
+            model = MSEDNeuralModel{float_type}(maturities, N, M, "diag", true; model_string=model_type, scale_grad=true, results_location=results_location)
             model_type = "3SRWSD-NNS"
         elseif model_type == "pC" || model_type == "11" 
             model = nothing
@@ -163,7 +166,7 @@ module YieldFactorModels
             model = nothing
             model_type = "vanillaNN"        
         elseif model_type == "RW" || model_type == "-1"
-            model = nothing
+            model = RandomWalkModel{float_type}(maturities, N, M; model_string=model_type, results_location=results_location)
             model_type = "RW"
         else
             error("Invalid model type: $model_type")
@@ -302,7 +305,7 @@ module YieldFactorModels
         # ========================================================================
         # Setup paths and load data
         # ========================================================================
-        data_folder, results_location = setup_data_paths(model_type, simulation, scratch_dir, thread_id)
+        data_folder, results_location = setup_data_paths( model_type, simulation, scratch_dir, thread_id)
         data, maturities = load_data(data_folder, thread_id)
         data = convert(Matrix{float_type}, data)
         maturities = convert(Vector{float_type}, maturities)
@@ -313,8 +316,8 @@ module YieldFactorModels
         N = length(maturities)  # Number of maturities
         M = 3                    # Number of factors
 
-        model, model_type = create_model(model_type, maturities, N, M, float_type)
-
+        model, model_type = create_model(model_type, maturities, N, M, float_type, "$results_location$(model_type)/" )
+ 
         # ========================================================================
         # Load and set parameters
         # ========================================================================

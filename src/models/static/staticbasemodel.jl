@@ -2,6 +2,7 @@
 abstract type AbstractStaticModel <: AbstractYieldFactorModel end
 abstract type AbstractStaticNeuralModel <: AbstractStaticModel end
 abstract type AbstractStaticλModel <: AbstractStaticModel end
+abstract type AbstractRandomWalkModel <: AbstractStaticModel end
 
 
 struct StaticBaseModel{Fl<:Real,Fβ<:Real,Fγ<:Real} <: AbstractYieldFactorModel
@@ -31,7 +32,8 @@ struct StaticBaseModel{Fl<:Real,Fβ<:Real,Fγ<:Real} <: AbstractYieldFactorModel
         maturities::Vector{Fl}, N::Int, M::Int, L::Int,
         specific_transformations::Vector{Function},
         specific_untransformations::Vector{Function},
-        model_string
+        model_string;
+        results_location::String = "results/"
     ) where {Fl<:Real}
 
         Z     = ones(Fl, N, M)
@@ -58,7 +60,7 @@ struct StaticBaseModel{Fl<:Real,Fβ<:Real,Fγ<:Real} <: AbstractYieldFactorModel
         ]
 
         init_folder    = "YieldFactorModels.jl/initializations/$(model_string)/"
-        results_folder = "YieldFactorModels.jl/results/$(model_string)/"
+        results_folder = results_location
 
         return new{Fl,Fl,Fl}(maturities, N, M, L, Z, beta, Phi, delta, mu, gamma,
                               transformations, untransformations,

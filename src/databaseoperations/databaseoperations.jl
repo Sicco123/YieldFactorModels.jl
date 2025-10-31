@@ -33,67 +33,122 @@ function read_static_params_from_db(model::AbstractMSEDrivenModel, task_id::Int,
     return all_params
 end
 
-function init_task_database(db_path::String, a::Int, b::Int)
+function init_task_database(db_path::String, a::Int, b::Int; max_attempts::Int=5)
+    for i in 1:max_attempts
+        try 
+            if i == 1
+                db = SQLite.DB(db_path)
+                DBInterface.execute(db, "PRAGMA journal_mode=WAL;")
+                DBInterface.execute(db, "PRAGMA synchronous=NORMAL;")
+                DBInterface.execute(db, "PRAGMA temp_store=MEMORY;")
+                DBInterface.execute(db, "PRAGMA busy_timeout=10000;")
+                DBInterface.execute(db, "CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY, state INTEGER NOT NULL);")
+                DBInterface.execute(db, """
+                    WITH RECURSIVE seq(x) AS (
+                        SELECT ?1
+                        UNION ALL
+                        SELECT x+1 FROM seq WHERE x < ?2
+                    )
+                    INSERT OR IGNORE INTO tasks(id, state)
+                    SELECT x, 0 FROM seq;
+                """, (min(a,b), max(a,b)))
+                SQLite.close(db)
+            else
+                # try to read task with id a
+                db = SQLite.DB(db_path)
+                DBInterface.execute(db, "SELECT state FROM tasks WHERE id = ?;", (a,))
+                SQLite.close(db)
+            end
+            break
+        catch
+            println("Attempt $i to initialize task database failed; retrying...")
+            SQLite.close(db)
+            sleep(5.0)  # exponential backoff
+        end
+    end
     db = SQLite.DB(db_path)
-    DBInterface.execute(db, "PRAGMA journal_mode=WAL;")
-    DBInterface.execute(db, "PRAGMA synchronous=NORMAL;")
-    DBInterface.execute(db, "PRAGMA temp_store=MEMORY;")
-    DBInterface.execute(db, "PRAGMA busy_timeout=10000;")
-    DBInterface.execute(db, "CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY, state INTEGER NOT NULL);")
-    DBInterface.execute(db, """
-        WITH RECURSIVE seq(x) AS (
-            SELECT ?1
-            UNION ALL
-            SELECT x+1 FROM seq WHERE x < ?2
-        )
-        INSERT OR IGNORE INTO tasks(id, state)
-        SELECT x, 0 FROM seq;
-    """, (min(a,b), max(a,b)))
     return db
 end
 
 const _CLAIM = "UPDATE tasks SET state = 1 WHERE id = ?1 AND state = 0 RETURNING id;"
 
 function claim_task(db::SQLite.DB, id::Integer)
-    result = DBInterface.execute(db, _CLAIM, (id,))
-    for row in result
-        return 0  # Successfully claimed
+    try 
+        result = DBInterface.execute(db, _CLAIM, (id,))
+        for row in result
+            return 0  # Successfully claimed
+        end
+    catch e 
+        return nothing 
     end
     return nothing  # Not found or already claimed
 end
 
-function init_proc_counter_db(db_path::String)
+function init_proc_counter_db(db_path::String; max_attempts::Int=5)
+    for i in 1:max_attempts
+        try
+            if i == 1
+                db = SQLite.DB(db_path)
+                DBInterface.execute(db, "PRAGMA journal_mode=WAL;")
+                DBInterface.execute(db, "PRAGMA synchronous=NORMAL;")
+                DBInterface.execute(db, "PRAGMA busy_timeout=10000;")
+                DBInterface.execute(db, "PRAGMA temp_store=MEMORY;")
+                DBInterface.execute(db, """
+                    CREATE TABLE IF NOT EXISTS proc_counter (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        n  INTEGER NOT NULL
+                    );
+                """)
+                DBInterface.execute(db, """
+                    INSERT INTO proc_counter(id, n) VALUES (1, 0)
+                    ON CONFLICT(id) DO NOTHING;
+                """)
+                SQLite.close(db)
+            else
+                # try to read proc_counter
+                db = SQLite.DB(db_path)
+                DBInterface.execute(db, "SELECT n FROM proc_counter WHERE id = 1;")
+                SQLite.close(db)
+            end
+            break
+        catch
+            println("Attempt $i to initialize proc_counter database failed; retrying...")
+            SQLite.close(db)
+            sleep(5.0)  # exponential backoff
+        end
+    end
     db = SQLite.DB(db_path)
-    DBInterface.execute(db, "PRAGMA journal_mode=WAL;")
-    DBInterface.execute(db, "PRAGMA synchronous=NORMAL;")
-    DBInterface.execute(db, "PRAGMA busy_timeout=10000;")
-    DBInterface.execute(db, "PRAGMA temp_store=MEMORY;")
-    DBInterface.execute(db, """
-        CREATE TABLE IF NOT EXISTS proc_counter (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            n  INTEGER NOT NULL
-        );
-    """)
-    DBInterface.execute(db, """
-        INSERT INTO proc_counter(id, n) VALUES (1, 0)
-        ON CONFLICT(id) DO NOTHING;
-    """)
+
     return db
 end
 
 const _INC_RETURNING = "UPDATE proc_counter SET n = n + 1 WHERE id = 1 RETURNING n;"
 const _DEC_RETURNING = "UPDATE proc_counter SET n = MAX(n - 1, 0) WHERE id = 1 RETURNING n;"
 
-function incr_working!(db::SQLite.DB)::Int
-    for row in DBInterface.execute(db, _INC_RETURNING)
-        return row[1]::Int
+function incr_working!(db::SQLite.DB; max_attempts::Int=10)::Int
+    for i in 1:max_attempts
+        try
+            for row in DBInterface.execute(db, _INC_RETURNING)
+                return row[1]::Int
+            end
+        catch e
+            println("Attempt $i to increment working counter failed: $e")
+            sleep(0.2 * i + rand())  # exponential backoff
+        end
     end
     error("Counter increment failed")
 end
 
-function decr_working!(db::SQLite.DB)::Int
-    for row in DBInterface.execute(db, _DEC_RETURNING)
-        return row[1]::Int
+function decr_working!(db::SQLite.DB; max_attempts::Int=10)::Int
+    for i in 1:max_attempts
+        try
+            for row in DBInterface.execute(db, _DEC_RETURNING)
+                return row[1]::Int
+            end
+        catch e
+            println("Attempt $i to decrement working counter failed: $e")
+            sleep(0.2*i + rand())  # exponential backoff
+        end
     end
     error("Counter decrement failed")
 end
