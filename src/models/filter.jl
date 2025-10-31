@@ -112,7 +112,7 @@ function filter(m::AbstractRandomWalkModel, y::Vector{T}, cache) where T<:Real
     end
 
     m.last_y .= y
-    println(m.last_y)
+
     return copy(m.last_y)
 end
 

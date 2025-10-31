@@ -113,8 +113,8 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
         try
             all_params = read_static_params_from_db(model, task_id, all_params; window_type=window_type)
             if window_type == "expanding"
-                temp_forecast_data = hcat(data, fill(NaN, size(data,1), forecast_horizon))
-                
+                temp_forecast_data = hcat(data[:,1:task_id], fill(NaN, size(data,1), forecast_horizon))
+               
                 if reestimate
                     t = @elapsed begin
                         _, loss, params, _ = run_estimation!(model, data, task_id, all_params,
@@ -145,6 +145,7 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
             end
 
             set_params!(model, params)
+        
             results = predict(model, temp_forecast_data)
 
 
@@ -160,6 +161,9 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
         finally
             _release_task_lock(lockdir)
         end
+
+        # collect garbage 
+        GC.gc()
     end
 
     # merge only if all shards exist
