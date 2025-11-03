@@ -40,6 +40,11 @@ function run_rolling_forecasts(model::AbstractYieldFactorModel, data::AbstractMa
         forecast_func(model, data,  thread_Id, in_sample_end,in_sample_start, out_sample_end, forecast_horizon, 
                         "moving",   init_params; param_groups=param_groups,
                         max_group_iters=max_group_iters, group_tol=group_tol, reestimate=reestimate)
+    elseif window_type == "no_windowing" || window_type == "simulation"
+        forecast_func = run_forecast_no_window_database
+        forecast_func(model, data,  thread_Id, in_sample_end,in_sample_start, out_sample_end, forecast_horizon, 
+                        window_type,   init_params; param_groups=param_groups,
+                        max_group_iters=max_group_iters, group_tol=group_tol, reestimate=reestimate)
     else
         error("Invalid window type")
     end
@@ -85,13 +90,13 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
     merged_path = "$(model.base.results_folder)db/forecasts_$(window_type)_merged.sqlite3"
     if isfile(merged_path)
         println("Merged forecasts already exist for $(window_type).")
-        export_all_csv(model, tasks, thread_Id; window_type=window_type)
+        export_all_csv(model, thread_Id, tasks; window_type=window_type)
         return
     end
 
     forecast_db_base = "$(model.base.results_folder)db/forecasts_$(window_type).sqlite3"
     lockroot = "$(model.base.results_folder)db/locks"
-    mkpath(joinpath(lockroot, window_type))
+
 
     all_params = init_params
 
@@ -113,7 +118,7 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
         try
             all_params = read_static_params_from_db(model, task_id, all_params; window_type=window_type)
             if window_type == "expanding"
-                temp_forecast_data = hcat(data[:,1:task_id], fill(NaN, size(data,1), forecast_horizon))
+                temp_forecast_data = hcat(data[:,1:task_id], fill(NaN, size(data,1), forecast_horizon-1))
                
                 if reestimate
                     t = @elapsed begin
@@ -128,7 +133,7 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
 
             elseif window_type == "moving"
                 span = task_id - (in_sample_end - in_sample_start)
-                temp_forecast_data = hcat(data[:, span:task_id], fill(NaN, size(data,1), forecast_horizon))
+                temp_forecast_data = hcat(data[:, span:task_id], fill(NaN, size(data,1), forecast_horizon-1))
 
                 if reestimate
                     t = @elapsed begin
@@ -147,7 +152,6 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
             set_params!(model, params)
         
             results = predict(model, temp_forecast_data)
-
 
             save_oos_forecast_sharded!(forecast_db_base, model, thread_Id, window_type,
                                        task_id, results, loss, params; forecast_horizon=forecast_horizon)
@@ -171,9 +175,53 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
     if all(isfile.(shard_paths))
         println("All shards exist. Merging...")
         merge_forecast_shards!(forecast_db_base; task_ids=tasks, delete_shards=true)
-        export_all_csv(model, tasks, thread_Id; window_type=window_type)
+        export_all_csv(model, thread_Id, tasks; window_type=window_type)
     else
         println("Not all shards available for $(model.base.model_string). Skipping merge for now.")
+    end
+
+    return nothing
+end
+
+
+
+function run_forecast_no_window_database(model::AbstractYieldFactorModel, data::AbstractMatrix, thread_Id::String,
+    in_sample_end::Int, in_sample_start::Int, out_sample_end::Int, forecast_horizon::Int, window_type::String,
+     init_params::AbstractMatrix;
+    param_groups::Vector{String}=String[], max_group_iters::Int=10, group_tol::Real=1e-8, reestimate::Bool=true)
+
+    all_params = init_params
+    _, loss, params, _ = run_estimation!(model, data[:, 1:in_sample_end], in_sample_end, all_params,
+                                                             param_groups, max_group_iters, group_tol; printing=false)
+
+    tasks = collect(in_sample_end:out_sample_end)
+       
+    # matrix with size (model.base.M + model.base.L + model.base.N, forecast_horizon * length(tasks))
+    all_results = Matrix{Float64}(undef, 2+model.base.M + model.base.L + model.base.N, forecast_horizon * length(tasks))
+    for task_id in tasks
+            temp_forecast_data = hcat(data[:,1:task_id], fill(NaN, size(data,1), forecast_horizon-1))   
+            set_params!(model, params)
+            results = predict(model, temp_forecast_data)
+            res = vcat(results.factors[:,end - forecast_horizon + 1:end], 
+                      results.states[:, end - forecast_horizon + 1:end], 
+                      results.preds[:, end - forecast_horizon + 1:end])
+            all_results[1, ((task_id - in_sample_end) * forecast_horizon + 1):(task_id - in_sample_end + 1) * forecast_horizon] .= fill(task_id, forecast_horizon)
+            all_results[2, ((task_id - in_sample_end) * forecast_horizon + 1):(task_id - in_sample_end + 1) * forecast_horizon] .= collect(1:forecast_horizon) .+ task_id
+            all_results[3:end, ((task_id - in_sample_end) * forecast_horizon + 1):(task_id - in_sample_end + 1) * forecast_horizon] .= res
+        # collect garbage 
+        GC.gc()
+    end
+
+    all_results = all_results[sortperm(all_results[:,1]), :]
+    all_results = all_results[sortperm(all_results[:,1]), :]
+
+
+    fname = string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id,
+                   "__", "expanding", "_window_forecasts.csv")
+
+
+    open(fname, "w") do io
+        writedlm(io, all_results', ',')
     end
 
     return nothing

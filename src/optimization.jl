@@ -12,6 +12,7 @@ function compute_loss(model::AbstractYieldFactorModel, data, params)
     transformed_params = transform_params(model, params)
     #println("hi")
     #set_params!(model, transformed_params)
+    
     temp_model = get_temp_model(model, transformed_params)
 
     # Compute loss via state space filter
@@ -34,11 +35,12 @@ function try_initializations(best_params, model::AbstractYieldFactorModel, data)
     return best_params
 end
 
-function try_initializations(best_params, model::AbstractStaticModel, data)
+function try_initializations(best_params, model::AbstractStaticModel, data; max_tries=10)
     # stack all new intializations in matrix 
-    all_params = zeros(eltype(best_params), length(best_params), 10)
-    for trial in 1:10
-        all_params[:, trial] = get_new_initial_params(model, best_params, trial)
+    all_params = zeros(eltype(best_params), length(best_params), max_tries + 1)
+    all_params[:, 1] = best_params
+    for trial in 1:max_tries
+        all_params[:, trial+1] = get_new_initial_params(model, best_params, trial)
     end
     return all_params
 end
@@ -87,8 +89,7 @@ function try_initializations(best_params, model::AbstractMSEDrivenModel, data)
         loss= get_loss(model, data)
         loss *= -1
 
-        #println("Trial $trial → Loss: $loss")
-        
+ 
         # Keep best parameters
         if loss < init_loss
             init_loss = loss

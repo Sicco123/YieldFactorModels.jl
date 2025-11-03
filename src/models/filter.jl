@@ -118,7 +118,7 @@ end
 
 function get_β_OLS!(beta, Z, y)
     try
-        beta .= cholesky(Z'Z)\(Z'y) #(Z' * Z) \ (Z' * y)
+        beta .= cholesky(Z'Z)\(Z'y) 
     catch e
         M = size(Z, 2)
         beta .= ((Z' * Z) + 1e-3 * I(M)) \ (Z' * y)

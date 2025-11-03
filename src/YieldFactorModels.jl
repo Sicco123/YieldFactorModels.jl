@@ -301,7 +301,14 @@ module YieldFactorModels
         reestimate::Bool=true, 
         scratch_dir::String=""
     )
-  
+
+        if simulation
+            window_type = "simulation"
+            run_optimization = false
+            run_rolling = true
+            save_results_bool = false
+        end 
+
         # ========================================================================
         # Setup paths and load data
         # ========================================================================
@@ -336,6 +343,7 @@ module YieldFactorModels
         # Run optimization
         # ========================================================================
         if run_optimization
+            println("The param groups are : ", param_groups)
             init_params, loss, params, ir = run_estimation!(
                 model, data, in_sample_end, all_params, param_groups, 
                 max_group_iters, group_tol

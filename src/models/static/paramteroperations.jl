@@ -91,7 +91,7 @@ function get_new_initial_params(model::AbstractStaticModel, params::AbstractVect
     
     # set rng 
     Random.seed!(trial)
-    random_draws = rand(length(params))
-    params .= random_draws
+    random_draws = rand(length(params) - (base.M*(base.M + 1))) .* 0.1 .- 0.05
+    params[1:end-(base.M*(base.M + 1))] .+= random_draws
     return params
 end

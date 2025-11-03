@@ -333,14 +333,14 @@ _forecast_merged_path(model, window_type) =
 _legacy_forecast_csv_path(model, thread_Id, window_type) =
     string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id, "__", window_type, "_window_forecasts.csv")
 
-_legacy_fitted_params_csv_path(model, window_type) =
-    string(model.base.results_folder, model.base.model_string, "_", window_type, "_fitted_params.csv")
+_legacy_fitted_params_csv_path(model, thread_Id, window_type) =
+    string(model.base.results_folder, model.base.model_string,  "__thread_id__", thread_Id, "__", window_type, "_window_fitted_params.csv")
 
- _legacy_factors_csv_path(model, window_type) =
-    string(model.base.results_folder, model.base.model_string, "_", window_type, "_factors.csv")
+ _legacy_factors_csv_path(model, thread_Id, window_type) =
+    string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id, "__", window_type, "_window_factors.csv")
 
-_legacy_states_csv_path(model, window_type) =
-    string(model.base.results_folder, model.base.model_string, "_", window_type,  "_states.csv")
+_legacy_states_csv_path(model, thread_Id, window_type) =
+    string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id, "__", window_type, "_window_states.csv")
 
 _deser(x) = deserialize(IOBuffer(x))
 
@@ -350,7 +350,7 @@ export_forecast_csv(model, thread_Id; window_type="expanding")
 Reads preds from merged DB and writes legacy forecasts CSV:
 rows = i, i+h, <K variables...>, sorted by col1 then col2.
 """
-function export_forecast_csv(model, tasks, thread_Id::AbstractString; window_type::AbstractString="expanding")
+function export_forecast_csv(model,thread_Id::AbstractString, tasks, ; window_type::AbstractString="expanding")
     
 
     tmp = _legacy_forecast_csv_path(model, thread_Id, window_type) * "temp.csv"
@@ -399,11 +399,11 @@ function export_forecast_csv(model, tasks, thread_Id::AbstractString; window_typ
 end
 
 # --- extra paths for fl1 / fl2 ---
-_legacy_fl1_csv_path(model, window_type) =
-    string(model.base.results_folder, model.base.model_string, "_", window_type, "_fl1.csv")
+_legacy_fl1_csv_path(model, thread_Id, window_type) =
+    string(model.base.results_folder, model.base.model_string,  "__thread_id__", thread_Id, "__", window_type, "_window_fl1.csv")
 
-_legacy_fl2_csv_path(model, window_type) =
-    string(model.base.results_folder, model.base.model_string, "_", window_type, "_fl2.csv")
+_legacy_fl2_csv_path(model, thread_Id, window_type) =
+    string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id, "__", window_type, "_window_fl2.csv")
 
 # Helper to (re)load, coerce numeric, sort by first column, and write final CSV
 function _finalize_simple_table(tmp_path::AbstractString, final_path::AbstractString)
@@ -427,8 +427,8 @@ Reads `params` from merged DB and writes a legacy params CSV:
 rows = task_id, params...
 Extraction mirrors export_forecast_csv: iterates over `tasks`, appends to a temp CSV, then sorts by task_id.
 """
-function export_fitted_params_csv(model, tasks; window_type::AbstractString="expanding")
-    tmp = _legacy_fitted_params_csv_path(model, window_type) * "temp.csv"
+function export_fitted_params_csv(model, thread_Id, tasks; window_type::AbstractString="expanding")
+    tmp = _legacy_fitted_params_csv_path(model, thread_Id, window_type) * "temp.csv"
     isfile(tmp) && rm(tmp; force=true)
 
     for task_id in tasks
@@ -454,7 +454,7 @@ function export_fitted_params_csv(model, tasks; window_type::AbstractString="exp
         end
     end
 
-    final = _legacy_fitted_params_csv_path(model, window_type)
+    final = _legacy_fitted_params_csv_path(model, thread_Id, window_type)
     isfile(final) && rm(final; force=true)
     return _finalize_simple_table(tmp, final)
 end
@@ -466,8 +466,8 @@ Reads `fl1` from merged DB and writes a legacy CSV:
 rows = task_id, fl1...
 Extraction mirrors export_forecast_csv.
 """
-function export_fl1_csv(model, tasks; window_type::AbstractString="expanding")
-    tmp = _legacy_fl1_csv_path(model, window_type) * "temp.csv"
+function export_fl1_csv(model, thread_Id, tasks; window_type::AbstractString="expanding")
+    tmp = _legacy_fl1_csv_path(model, thread_Id, window_type) * "temp.csv"
     isfile(tmp) && rm(tmp; force=true)
 
     for task_id in tasks
@@ -496,7 +496,7 @@ function export_fl1_csv(model, tasks; window_type::AbstractString="expanding")
         end
     end
 
-    final = _legacy_fl1_csv_path(model, window_type)
+    final = _legacy_fl1_csv_path(model, thread_Id, window_type)
     isfile(final) && rm(final; force=true)
     return _finalize_simple_table(tmp, final)
 end
@@ -508,8 +508,8 @@ Reads `fl2` from merged DB and writes a legacy CSV:
 rows = task_id, fl2...
 Extraction mirrors export_forecast_csv.
 """
-function export_fl2_csv(model, tasks; window_type::AbstractString="expanding")
-    tmp = _legacy_fl2_csv_path(model, window_type) * "temp.csv"
+function export_fl2_csv(model, thread_Id, tasks; window_type::AbstractString="expanding")
+    tmp = _legacy_fl2_csv_path(model, thread_Id, window_type) * "temp.csv"
     isfile(tmp) && rm(tmp; force=true)
 
     for task_id in tasks
@@ -539,7 +539,7 @@ function export_fl2_csv(model, tasks; window_type::AbstractString="expanding")
         end
     end
 
-    final = _legacy_fl2_csv_path(model, window_type)
+    final = _legacy_fl2_csv_path(model, thread_Id, window_type)
     isfile(final) && rm(final; force=true)
     return _finalize_simple_table(tmp, final)
 end
@@ -562,8 +562,8 @@ function _append_array_rows!(io, task_id::Real, A)
     end
 end
 
-function export_factors_csv(model, tasks; window_type::AbstractString="expanding")
-    tmp = _legacy_factors_csv_path(model, window_type) * "temp.csv"
+function export_factors_csv(model, thread_Id, tasks; window_type::AbstractString="expanding")
+    tmp = _legacy_factors_csv_path(model, thread_Id, window_type) * "temp.csv"
     isfile(tmp) && rm(tmp; force=true)
 
     for task_id in tasks
@@ -582,13 +582,13 @@ function export_factors_csv(model, tasks; window_type::AbstractString="expanding
         end
     end
 
-    final = _legacy_factors_csv_path(model, window_type)
+    final = _legacy_factors_csv_path(model, thread_Id, window_type)
     isfile(final) && rm(final; force=true)
     return _finalize_simple_table(tmp, final)
 end
 
-function export_states_csv(model, tasks; window_type::AbstractString="expanding")
-    tmp = _legacy_states_csv_path(model, window_type) * "temp.csv"
+function export_states_csv(model, thread_Id, tasks; window_type::AbstractString="expanding")
+    tmp = _legacy_states_csv_path(model, thread_Id, window_type) * "temp.csv"
     isfile(tmp) && rm(tmp; force=true)
 
     for task_id in tasks
@@ -607,18 +607,18 @@ function export_states_csv(model, tasks; window_type::AbstractString="expanding"
         end
     end
 
-    final = _legacy_states_csv_path(model, window_type)
+    final = _legacy_states_csv_path(model, thread_Id, window_type)
     isfile(final) && rm(final; force=true)
     return _finalize_simple_table(tmp, final)
 end
 
 # Optional: convenience bundler that leaves export_forecast_csv untouched
-export_all_csv(model, tasks, thread_Id; window_type="expanding") = (
-    forecasts      = export_forecast_csv(model, tasks, thread_Id; window_type=window_type),
-    fitted_params  = export_fitted_params_csv(model, tasks; window_type=window_type),
-    fl1            = export_fl1_csv(model, tasks; window_type=window_type),
-    fl2            = export_fl2_csv(model, tasks; window_type=window_type),
-    factors        = export_factors_csv(model, tasks; window_type=window_type),  # NEW
-    states         = export_states_csv(model, tasks; window_type=window_type),   # NEW
+export_all_csv(model, thread_Id, tasks; window_type="expanding") = (
+    forecasts      = export_forecast_csv(model, thread_Id, tasks; window_type=window_type),
+    fitted_params  = export_fitted_params_csv(model, thread_Id, tasks; window_type=window_type),
+    fl1            = export_fl1_csv(model, thread_Id, tasks; window_type=window_type),
+    fl2            = export_fl2_csv(model, thread_Id, tasks; window_type=window_type),
+    factors        = export_factors_csv(model, thread_Id, tasks; window_type=window_type),  # NEW
+    states         = export_states_csv(model, thread_Id, tasks; window_type=window_type),   # NEW
 )
 
