@@ -85,11 +85,12 @@ end
     n = size(inputs, 2)
     # Write the raw forward directly into dest (no extra temp copy)
     dest .= vec(net(inputs))  # vec is a reshape when the output is a vector -> no alloc by itself
+
     T = eltype(dest)
     @inbounds begin
-        raw_first = dest[begin]          # cache raw values before we overwrite
+        #raw_first = dest[begin]          # cache raw values before we overwrite
         raw_last  = dest[end-1]
-        inv_first = inv(raw_first - raw_last + T(1e-7))
+        inv_first = inv(dest[begin]  - raw_last + T(1e-7))
 
         # do not touch dest[1] until the very end
         for i in firstindex(dest)+1 : lastindex(dest)-2
@@ -107,6 +108,7 @@ end
 @inline function transform_net_1!(dest::StridedVector{T}, net, inputs) where {T}
     n = size(inputs, 2)
     dest .= vec(net(inputs))
+
     @inbounds begin
         raw_first = dest[1]
         raw_last  = dest[end-1]
