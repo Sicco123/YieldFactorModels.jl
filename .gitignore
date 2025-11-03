@@ -11,3 +11,4 @@
 *.png
 **/*.csv
 **/*.sqlite3
+*.sqlite3*
