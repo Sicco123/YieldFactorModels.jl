@@ -7,14 +7,14 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
     # Neural Networks    
     net1::Chain
     net2::Chain
-    build_net1::Optimisers.Restructure
-    build_net2::Optimisers.Restructure
-
+    build_net1::Any
+    build_net2::Any
+    
     # Net input 
     net_input::Matrix{Fl}
 
     # layout 
-    layout::NamedTuple{(:lengths, :shapes, :params), Tuple{Vector{Int}, Vector{Tuple{Vararg{Int}}}, Vector{AbstractArray}}}
+    layout::NamedTuple
 
     # dual net cache 
     dual_net_cache::Base.RefValue{Dict{DataType,NamedTuple}}
@@ -78,8 +78,6 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
 
         _, build_net1 = Flux.destructure(net1)
         _, build_net2 = Flux.destructure(net2)
-
-        println(typeof(build_net1))
         
         # append identity transformations for the net params 
 
@@ -128,20 +126,20 @@ end
 
 function param_layout(m)
     ps = Flux.params(m)
-    params_vec = collect(ps)  # Collect once to avoid repeated iteration
-    lengths = map(length, params_vec)
-    shapes  = map(size, params_vec)
-    return (lengths = lengths, shapes = shapes, params = params_vec)
+    lengths = map(length, ps) |> collect
+    shapes  = map(size, ps)   |> collect
+    return (lengths = lengths, shapes = shapes)
 end
 
 function loadθ!(m, θ::AbstractVector, layout)
     i = 1
-    @inbounds for (p, n, shp) in zip(layout.params, layout.lengths, layout.shapes)
-        copyto!(p, reshape(view(θ, i:i+n-1), shp))
+    for (p, n, shp) in zip(Flux.params(m), layout.lengths, layout.shapes)
+        @views copyto!(p, reshape(θ[i:i+n-1], shp))
         i += n
     end
-    return nothing
+    return #m
 end
+
 
 @inline function get_nets(model::AbstractNeuralMSEDrivenModel, gamma::AbstractVector{T}) where T
     
@@ -178,10 +176,7 @@ function update_factor_loadings!(model::AbstractNeuralMSEDrivenModel, gamma, Z)
         loadθ!(nets.net1, gamma[1:9], nets.layout)
         loadθ!(nets.net2, gamma[10:18], nets.layout)
 
-        if Z[1,1] !== one(R)
-            Z[:, 1] .= one(R)
-        end
-
+        Z[:, 1] .= one(R)
         transform_net_1!(Z[:, 2], nets.net1, model.net_input)
         transform_net_2!(Z[:, 3], nets.net2, model.net_input)
     end

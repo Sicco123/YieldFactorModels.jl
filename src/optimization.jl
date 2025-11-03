@@ -243,6 +243,9 @@ function estimate_steps!(
                     abort_group = true
                     break
                 end
+
+                # garbage collect 
+                GC.gc()
             end
             
             # Exit if error occurred
@@ -262,6 +265,7 @@ function estimate_steps!(
                 break
             end
             prev_ll = ll
+
         end
         
         # Store results

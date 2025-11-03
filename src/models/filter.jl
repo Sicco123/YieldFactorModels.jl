@@ -6,7 +6,7 @@ struct GradientCache{C}
 end
 
 function GradientCache(gamma::AbstractVector{T}) where T
-    cfg = ForwardDiff.GradientConfig(nothing, gamma)
+    cfg = ForwardDiff.GradientConfig(nothing, gamma, ForwardDiff.Chunk{length(gamma)}())
     return GradientCache{typeof(cfg)}(cfg, Ref{Any}(nothing), Ref{Any}(nothing))
 end
 
