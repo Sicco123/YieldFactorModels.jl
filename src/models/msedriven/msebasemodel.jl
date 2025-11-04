@@ -67,6 +67,7 @@ struct MSEDrivenBaseModel{Fl<:Real,Fβ<:Real,Fγ<:Real} <: AbstractYieldFactorMo
         mu    = zeros(Fl, M)
 
         gamma = zeros(Fl, L)
+    
 
         A = ones(Fl, L)
         B = random_walk ? zeros(Fl, 0) : ones(Fl, L)   # decide policy

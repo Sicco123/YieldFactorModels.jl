@@ -10,14 +10,12 @@ Transforms parameters, updates model, and returns scaled negative loss.
 function compute_loss(model::AbstractYieldFactorModel, data, params)
     # Transform parameters to constrained space
     transformed_params = transform_params(model, params)
-    #println("hi")
-    #set_params!(model, transformed_params)
     
-    temp_model = get_temp_model(model, transformed_params)
-
+    #temp_model = get_temp_model(model, transformed_params)
+    set_params!(model, transformed_params)
+   
     # Compute loss via state space filter
-    loss= get_loss(temp_model, data)
-
+    loss= get_loss(model, data)
 
     # Return negative for minimization (optimizer minimizes)
     return -loss
@@ -205,7 +203,6 @@ function estimate_steps!(
     
         # Iteratively optimize each parameter group
         for iter in 1:max_group_iters
-
             for g in group_ids
                 # Skip placeholder group
                 if g == "-1"
@@ -217,7 +214,7 @@ function estimate_steps!(
                 
                 # Find parameters belonging to this group
                 inds = findall(param_groups .== g)
-                
+             
                 # Create objective for this parameter block
                 subobj = x_sub -> begin
                     p_temp = similar(x_sub, length(p))  # Dual during AD, Float64 otherwise
@@ -226,14 +223,16 @@ function estimate_steps!(
                     
                     loss_wrapper(p_temp)
                 end
-                
+    
                 x0 = p[inds]
-                td = TwiceDifferentiable(subobj, x0; autodiff = :forward)
-                
+
+           
                 # Optimize this parameter block
                 try
-                    res = optimize(td, x0, optimizer, opt)
-                    p[inds] = Optim.minimizer(res)
+                    # without autodiff
+                    res = optimize(subobj, x0, optimizer, opt)
+                 
+                    p[inds] .= Optim.minimizer(res)
                 catch e
                     println("  ⚠️  Error optimizing group $g on iter $iter: $e")
                     if iter == 1
@@ -444,7 +443,7 @@ function _create_optimizer_dict(opts, optimizers, T; printing::Bool=true)
             show_every = 10,
             store_trace = false,
             extended_trace = false,
-            allow_f_increases = true
+            allow_f_increases = false
         )
         
         opt3 = Optim.Options(
@@ -469,7 +468,7 @@ function _create_optimizer_dict(opts, optimizers, T; printing::Bool=true)
         
         return Dict(
             "1" => (optimizer1, opt1, "NelderMead"),
-            "2" => (optimizer2, opt2, "LBFGS"),
+            "2" => (optimizer2, opt2, "LBFGS"), #LBFGS
             "3" => (optimizer3, opt3, "Adam"),
             "4" => (optimizer4, opt1, "NelderMead"),
             "5" => (optimizer3, opt5, "Adam-Long")

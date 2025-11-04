@@ -7,17 +7,13 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
     # Neural Networks    
     net1::Chain
     net2::Chain
-    build_net1::Optimisers.Restructure
-    build_net2::Optimisers.Restructure
+
+    net1_dual::Chain
+    net2_dual::Chain
 
     # Net input 
     net_input::Matrix{Fl}
 
-    # layout 
-    layout::NamedTuple{(:lengths, :shapes, :params), Tuple{Vector{Int}, Vector{Tuple{Vararg{Int}}}, Vector{AbstractArray}}}
-
-    # dual net cache 
-    dual_net_cache::Base.RefValue{Dict{DataType,NamedTuple}}
 
     # Constructor
     function MSEDNeuralModel{T}(maturities::Vector{T}, N::Int, M::Int, dynamics::String, random_walk::Bool;
@@ -79,9 +75,13 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
         _, build_net1 = Flux.destructure(net1)
         _, build_net2 = Flux.destructure(net2)
 
-        println(typeof(build_net1))
+        dual_params = ForwardDiff.Dual{Nothing, T, 18}.(randn(T, 18))
+        net1_dual = build_net1(dual_params[1:9])
+        net2_dual = build_net2(dual_params[10:18])
         
-        # append identity transformations for the net params 
+        
+        
+        # append identity transformations for the net params
 
         append!(specific_transformations, fill(identity, net_size*3*2))
         append!(specific_untransformations, fill(identity, net_size*3*2))
@@ -100,23 +100,21 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
             net_input[1, i] = maturities[i]
         end
 
-        layout = param_layout(net1)  # assuming both nets have same layout
-
-        dual_cache = Ref(Dict{DataType,NamedTuple}())
-        new{T, T, T}(base, net1, net2, build_net1, build_net2, net_input, layout, dual_cache)
+       
+        
+        new{T, T, T}(base, net1, net2, net1_dual, net2_dual, net_input)
     end
 
     # Full-fields inner constructor (lets you call with fields directly)
     MSEDNeuralModel{Fl}(base::MSEDrivenBaseModel{Fl,Fβ,Fγ}, net1::Chain, net2::Chain,
-               build_net1, build_net2, net_input::Matrix{Fl}, layout::NamedTuple,
-               dual_net_cache::Base.RefValue{Dict{DataType,NamedTuple}}) where {Fl<:Real, Fβ<:Real, Fγ<:Real} =
-    new{Fl, Fβ, Fγ}(base, net1, net2, build_net1, build_net2, net_input, layout, dual_net_cache)
+               net1_dual::Chain, net2_dual::Chain, net_input::Matrix{Fl}, ) where {Fl<:Real, Fβ<:Real, Fγ<:Real} =
+    new{Fl, Fβ, Fγ}(base, net1, net2,  net1_dual, net2_dual, net_input, )
 end
 
 function build(model::MSEDNeuralModel, Z::Matrix{Fγ}, beta::Vector{Fβ}, gamma::Vector{Fγ}, Phi::Matrix{Fβ}, delta::Vector{Fβ}, mu::Vector{Fβ}, A::Vector{Fγ}, B::Vector{Fγ}, omega::Vector{Fγ}, nu::Vector{Fγ}) where {Fβ<:Real, Fγ<:Real}
     base = build(model.base, Z, beta, gamma, Phi, delta, mu, A, B, omega, nu)
     return MSEDNeuralModel{typeof(base.maturities[1])}(
-       base, model.net1, model.net2, model.build_net1, model.build_net2, model.net_input, model.layout, model.dual_net_cache
+       base, model.net1, model.net2, model.net1_dual, model.net2_dual, model.net_input
     )
 end
 
@@ -126,67 +124,53 @@ function get_static_model_type(model::AbstractNeuralMSEDrivenModel)
 end
 
 
-function param_layout(m)
-    ps = Flux.params(m)
-    params_vec = collect(ps)  # Collect once to avoid repeated iteration
-    lengths = map(length, params_vec)
-    shapes  = map(size, params_vec)
-    return (lengths = lengths, shapes = shapes, params = params_vec)
-end
 
-function loadθ!(m, θ::AbstractVector, layout)
-    i = 1
-    @inbounds for (p, n, shp) in zip(layout.params, layout.lengths, layout.shapes)
-        copyto!(p, reshape(view(θ, i:i+n-1), shp))
-        i += n
-    end
+
+@inline function loadθ!(θ::AbstractVector{T}, net::Chain) where T
+    net[1].weight .= view(θ, 1:3)
+    net[1].bias .= view(θ, 4:6)
+    net[2].weight .= view(θ, 7:9)'
     return nothing
 end
 
-@inline function get_nets(model::AbstractNeuralMSEDrivenModel, gamma::AbstractVector{T}) where T
-    
+# Simpler, more idiomatic approach
+@inline function _get_networks(model::AbstractNeuralMSEDrivenModel, ::Type{T}) where T
     if T <: AbstractFloat
-        return (net1=model.net1, net2=model.net2, layout=model.layout)
-    else # Dual path: lazily build and cache once per Dual type
-        cache = model.dual_net_cache[]
-        if !haskey(cache, T)
-            net1d   = model.build_net1(view(gamma, 1:9))
-            net2d   = model.build_net2(view(gamma, 10:18))
-            layoutd = param_layout(net1d)
-            cache[T] = (net1=net1d, net2=net2d, layout=layoutd)
-        end
-
-        return cache[T]
+        return model.net1, model.net2
+    else  # Dual
+        return model.net1_dual, model.net2_dual
     end
 end
 
-
-"""
-    transform_net_1(net1, maturities)
-
-    update_factor_loadings!(model::AbstractNeuralMSEDrivenModel, gamma, Z)
-
-Update factor loadings matrix Z using neural network transformations.
-"""
-function update_factor_loadings!(model::AbstractNeuralMSEDrivenModel, gamma, Z)
-    R = eltype(gamma)
-    N = size(Z, 1)
-
-    nets = get_nets(model, gamma)
-
-    @views begin
-        loadθ!(nets.net1, gamma[1:9], nets.layout)
-        loadθ!(nets.net2, gamma[10:18], nets.layout)
-
-        if Z[1,1] !== one(R)
-            Z[:, 1] .= one(R)
-        end
-
-        transform_net_1!(Z[:, 2], nets.net1, model.net_input)
-        transform_net_2!(Z[:, 3], nets.net2, model.net_input)
+@inline function update_factor_loadings!(
+    model::AbstractNeuralMSEDrivenModel, 
+    gamma::AbstractVector{T}, 
+    Z::AbstractMatrix{R}
+) where {T <: Real, R <: Real}
+    
+    # Direct type dispatch - simpler and equally efficient
+    net1, net2 = _get_networks(model, T)
+    
+    # Pre-compute views to avoid repeated indexing
+    gamma1 = @view gamma[1:9]
+    gamma2 = @view gamma[10:18]
+    z2 = @view Z[:, 2]
+    z3 = @view Z[:, 3]
+    
+    # Load parameters
+    loadθ!( gamma1, net1)
+    loadθ!( gamma2, net2)
+    
+    # Set first column to ones if needed (more robust check)
+    if Z[1, 1] != one(T)
+        Z[:, 1] .= one(T)
     end
+    #println(typeof(gamma))
+    # Transform
+    transform_net_1!(z2, net1, model.net_input)
+    transform_net_2!(z3, net2, model.net_input)
+
 
     
     return nothing
 end
-

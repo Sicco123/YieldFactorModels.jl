@@ -45,8 +45,7 @@ end
     return nothing
 end
 
-function filter(m::AbstractMSEDrivenModel, y::Vector{T}, cache) where T<:Real
-
+function filter(m::AbstractMSEDrivenModel, y::AbstractVector{T}, cache) where T<:Real
     if isnan(y[1])
         if !isempty(m.base.B)
             m.base.gamma .= m.base.nu .+ m.base.B .* m.base.gamma
@@ -87,7 +86,7 @@ function filter(m::AbstractMSEDrivenModel, y::Vector{T}, cache) where T<:Real
     return m.base.Z * m.base.beta
 end
 
-function filter(m::AbstractStaticModel, y::Vector{T}, cache) where T<:Real
+function filter(m::AbstractStaticModel, y::AbstractVector{T}, cache) where T<:Real
 
     if isnan(y[1])
         m.base.beta .= m.base.mu  .+ m.base.Phi * m.base.beta
@@ -106,7 +105,7 @@ function filter(m::AbstractStaticModel, y::Vector{T}, cache) where T<:Real
     return m.base.Z * m.base.beta
 end
 
-function filter(m::AbstractRandomWalkModel, y::Vector{T}, cache) where T<:Real
+function filter(m::AbstractRandomWalkModel, y::AbstractVector{T}, cache) where T<:Real
     if isnan(y[1])
         return copy(m.last_y)
     end
@@ -161,25 +160,39 @@ function get_grad_gamma!(cache::GradientCache, m, beta, gamma, Z_proto, y)
     return DiffResults.gradient(res)
 end
 
-function get_loss(model::AbstractYieldFactorModel, data::Matrix{T}) where T<:Real
+function get_loss(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=3 ) where T<:Real
     base = model.base
     nobs = size(data, 2)
     cache = initialize_filter(model)
 
-    mse = 0.0
+    mse = T(0.0)
+    
+    catched_params = similar(get_params(model))
+    pred = similar(data[:,1])
+    v = similar(data[:,1])
 
-    for t in 1:nobs-1
-        pred = filter(model,  data[:, t], cache)
-        v = data[:, t+1] .- pred
-        
-        mse -= dot(v, v)
-        
-        if isinf(mse) || isnan(mse)
-            return -Inf
+    @inbounds for k in 0:K-1
+        catch_point = Int(floor(nobs*((0.25) + 0.25*(k)/K)))
+        if k > 1
+            set_params!(model, catched_params) 
+        end 
+        for t in 1:nobs-1
+            @views pred .= filter(model, data[:, t], cache)
+            @views v .= data[:, t+1] .- pred
+            
+            mse -= dot(v, v)
+            
+            if isinf(mse) || isnan(mse)
+                return -Inf
+            end
+
+            if t == catch_point
+                catched_params = copy(get_params(model))
+            end
         end
     end
 
-    return mse/base.N/nobs
+    return mse/base.N/nobs/K
 end
 
 
@@ -194,6 +207,7 @@ function predict(model::AbstractYieldFactorModel, data::Matrix{T}) where T<:Real
     states = Matrix{T}(undef, model.base.L, nobs)
     factor_loadings_1 = Matrix{T}(undef, model.base.N,  nobs)
     factor_loadings_2 = Matrix{T}(undef, model.base.N,  nobs)
+
     for t in 1:nobs
         pred = filter(model, data[:, t], cache)
         preds[:, t] = pred

@@ -299,7 +299,8 @@ module YieldFactorModels
         save_results_bool::Bool=true, 
         simulation::Bool=false, 
         reestimate::Bool=true, 
-        scratch_dir::String=""
+        scratch_dir::String="", 
+        seed::Int=43
     )
 
         if simulation
@@ -309,6 +310,7 @@ module YieldFactorModels
             save_results_bool = false
         end 
 
+        Random.seed!(seed)
         # ========================================================================
         # Setup paths and load data
         # ========================================================================

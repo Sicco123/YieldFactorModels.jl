@@ -81,16 +81,16 @@ end
 
 
 # Generic fallback (works for views, OffsetArrays)
-@inline function transform_net_1!(dest::AbstractVector, net, inputs)
+@inline function transform_net_1!(dest::AbstractVector, net::Chain, inputs::AbstractMatrix)
     n = size(inputs, 2)
     # Write the raw forward directly into dest (no extra temp copy)
     dest .= vec(net(inputs))  # vec is a reshape when the output is a vector -> no alloc by itself
 
     T = eltype(dest)
     @inbounds begin
-        #raw_first = dest[begin]          # cache raw values before we overwrite
+        raw_first = dest[begin]          # cache raw values before we overwrite
         raw_last  = dest[end-1]
-        inv_first = inv(dest[begin]  - raw_last + T(1e-7))
+        inv_first = inv(raw_first  - raw_last + T(1e-7))
 
         # do not touch dest[1] until the very end
         for i in firstindex(dest)+1 : lastindex(dest)-2
@@ -105,7 +105,7 @@ end
 end
 
 # Fast path for contiguous vectors – allows SIMD
-@inline function transform_net_1!(dest::StridedVector{T}, net, inputs) where {T}
+@inline function transform_net_1!(dest::StridedVector{T}, net::Chain, inputs::AbstractMatrix{R}) where {T, R}
     n = size(inputs, 2)
     dest .= vec(net(inputs))
 
@@ -151,11 +151,10 @@ end
 # end
 
 # Generic
-@inline function transform_net_2!(dest::AbstractVector, net, inputs; scale = 0.9610)
+@inline function transform_net_2!(dest::AbstractVector{T}, net::Chain, inputs::AbstractMatrix{R}; scale = 0.9610) where {T, R}
     n = size(inputs, 2)
     dest .= vec(net(inputs))
 
-    T = eltype(dest)
     x1 = @inbounds inputs[1, 1]
     xN = @inbounds inputs[1, n]
 
@@ -188,7 +187,7 @@ end
 end
 
 # Fast path for StridedVector enables SIMD in the main loop too
-@inline function transform_net_2!(dest::StridedVector{T}, net, inputs; scale = 0.9610) where {T}
+@inline function transform_net_2!(dest::StridedVector{T}, net::Chain, inputs::AbstractMatrix{R}; scale = 0.9610) where {T, R}
     n = size(inputs, 2)
     dest .= vec(net(inputs))
 
