@@ -43,6 +43,15 @@ function try_initializations(best_params, model::AbstractStaticModel, data; max_
     return all_params
 end
 
+function try_initializations(best_params, model::AbstractRandomWalkModel, data; max_tries=10)
+    # stack all new intializations in matrix 
+    all_params = zeros(eltype(best_params), length(best_params), 1)
+    all_params[:, 1] = best_params
+    return all_params
+end
+
+
+
 """
     try_initializations(best_params, model::AbstractMSEDrivenModel, data)
 

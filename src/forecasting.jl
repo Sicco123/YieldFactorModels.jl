@@ -88,14 +88,34 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
     tasks = Random.shuffle(RandomDevice(), tasks)
    
     merged_path = "$(model.base.results_folder)db/forecasts_$(window_type)_merged.sqlite3"
-    if isfile(merged_path)
+    lockroot = "$(model.base.results_folder)db/locks"
+    
+    if isfile(merged_path) 
         println("Merged forecasts already exist for $(window_type).")
-        export_all_csv(model, thread_Id, tasks; window_type=window_type)
+        # forecast path
+        forecast_path = "$(model.base.results_folder)$(model.base.model_string)__thread_id__$(thread_Id)__$(window_type)_window_forecasts.csv" 
+        if isfile(forecast_path)
+            println("CSV export already exists for $(window_type). Skipping export.")
+            return
+        end
+
+        # create merge lock
+        lockdir = _acquire_task_lock(lockroot, window_type, 0)
+        if isnothing(lockdir)
+            println("Failed to acquire merge lock for $(model.base.model_string). Skipping merge.")
+            return
+        end
+
+        try
+            export_all_csv(model, thread_Id, tasks; window_type=window_type)
+        finally
+            _release_task_lock(lockdir)
+        end
         return
     end
 
     forecast_db_base = "$(model.base.results_folder)db/forecasts_$(window_type).sqlite3"
-    lockroot = "$(model.base.results_folder)db/locks"
+
 
 
     all_params = init_params
@@ -128,7 +148,12 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
                     est_total_time += t
                     est_count += 1
                 else
-                    loss = NaN; params = all_params[:,1]
+                    
+                    # try reading from database 
+                    # if database exists 
+                 
+                    params = read_params_from_db(model, task_id, all_params; window_type=window_type)[:,1]
+                    loss = NaN
                 end
 
             elseif window_type == "moving"
@@ -143,7 +168,11 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
                     est_total_time += t
                     est_count += 1
                 else
-                    loss = NaN; params = all_params[:,1]
+                    # try reading from database 
+                    # if database exists 
+                    params = read_params_from_db(model, task_id, all_params; window_type=window_type)[:,1]
+                   
+                    loss = NaN
                 end
             else
                 error("Invalid window type")
@@ -159,7 +188,7 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
             if est_count > 0
                 println("Thread $thread_Id estimation summary: performed $est_count estimations, average seconds per task: $(est_total_time / est_count), last: $t")
             else
-                println("Thread $thread_Id estimation summary: no re-estimation performed.")
+                println("Thread $thread_Id estimation summary: no re-estimation performed for $(model.base.model_string) for task $task_id.")
             end
 
         finally
@@ -174,8 +203,19 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
     shard_paths = [_forecast_path(forecast_db_base, t) for t in tasks]
     if all(isfile.(shard_paths))
         println("All shards exist. Merging...")
-        merge_forecast_shards!(forecast_db_base; task_ids=tasks, delete_shards=true)
-        export_all_csv(model, thread_Id, tasks; window_type=window_type)
+
+        # create merge lock 
+        lockdir = _acquire_task_lock(lockroot, window_type, 0)
+        if isnothing(lockdir)
+            println("Failed to acquire merge lock for $(model.base.model_string). Skipping merge.")
+            return
+        end
+        try 
+            merge_forecast_shards!(forecast_db_base; task_ids=tasks, delete_shards=true)
+            export_all_csv(model, thread_Id, tasks; window_type=window_type)
+        finally
+            _release_task_lock(lockdir)
+        end
     else
         println("Not all shards available for $(model.base.model_string). Skipping merge for now.")
     end

@@ -160,7 +160,7 @@ function get_grad_gamma!(cache::GradientCache, m, beta, gamma, Z_proto, y)
     return DiffResults.gradient(res)
 end
 
-function get_loss(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=3 ) where T<:Real
+function get_loss(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=1 ) where T<:Real
     base = model.base
     nobs = size(data, 2)
     cache = initialize_filter(model)
@@ -196,7 +196,7 @@ function get_loss(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=3 ) w
 end
 
 
-function predict(model::AbstractYieldFactorModel, data::Matrix{T}) where T<:Real
+function predict(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=3) where T<:Real
     base = model.base
     nobs = size(data, 2)
 
@@ -219,3 +219,45 @@ function predict(model::AbstractYieldFactorModel, data::Matrix{T}) where T<:Real
 
     return (preds=preds, factors=factors, states=states, factor_loadings_1=factor_loadings_1, factor_loadings_2=factor_loadings_2)
 end
+
+# function predict(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=10) where T<:Real
+#     base = model.base
+#     nobs = size(data, 2)
+
+#     cache = initialize_filter(model)
+
+#     # Store all K predictions
+#     all_preds = Array{T, 3}(undef, size(data, 1), nobs, K)
+#     factors = Matrix{T}(undef, model.base.M, nobs)
+#     states = Matrix{T}(undef, model.base.L, nobs)
+#     factor_loadings_1 = Matrix{T}(undef, model.base.N,  nobs)
+#     factor_loadings_2 = Matrix{T}(undef, model.base.N,  nobs)
+
+#     catched_params = similar(get_params(model))
+
+#     @inbounds for k in 0:K-1
+#         catch_point = Int(floor(nobs*((0.25) + 0.25*(k)/K)))
+#         if k > 0  # Reset after first iteration
+#             set_params!(model, catched_params)
+#         end
+#         for t in 1:nobs
+#             pred = filter(model, data[:, t], cache)
+#             all_preds[:, t, k+1] = pred
+#             if k == K-1  # Only store these on the last iteration
+#                 factors[:, t] = base.beta
+#                 states[:, t] = base.gamma
+#                 factor_loadings_1[:, t] = copy(base.Z[:, 2])
+#                 factor_loadings_2[:, t] = copy(base.Z[:, 3])
+#             end
+#             if t == catch_point
+#                 catched_params = copy(get_params(model))
+#             end
+#         end
+#     end
+
+#     # Compute median across K iterations
+    
+#     preds = median(all_preds, dims=3)[:, :, 1]
+
+#     return (preds=preds, factors=factors, states=states, factor_loadings_1=factor_loadings_1, factor_loadings_2=factor_loadings_2)
+# end

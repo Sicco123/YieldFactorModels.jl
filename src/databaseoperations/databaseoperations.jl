@@ -33,6 +33,44 @@ function read_static_params_from_db(model::AbstractMSEDrivenModel, task_id::Int,
     return all_params
 end
 
+function read_params_from_db(model::AbstractYieldFactorModel, task_id::Int, all_params::AbstractMatrix; window_type::AbstractString="expanding")
+    model_name = model.base.model_string
+    results_dir = dirname(dirname(model.base.results_folder))
+    db_folder = string(results_dir, "/$model_name/db/")
+
+    # from forecasts_${window_type}_merged.sqlite3 get the params
+    forecast_db_path = string(db_folder, "forecasts_", window_type, "_merged.sqlite3")
+
+    # if file exists else return all_params
+    if !isfile(forecast_db_path)
+        println("Forecast database not found at $forecast_db_path; returning default parameters.")
+        return all_params
+    end
+
+    db = SQLite.DB(forecast_db_path)
+    rows = DBInterface.execute(db, "SELECT params FROM forecasts WHERE task_id = ?;", (task_id,))
+
+   
+    try
+        params = nothing
+        for row in rows
+            params = _deser(row[1])
+            # expand dimension of params
+            params = reshape(params, size(params, 1), 1)
+
+        end
+        all_params[:,1] .= params
+
+    catch e
+        println("Error reading static params for task $task_id: $e")
+        SQLite.close(db)
+        rethrow(e)
+    end
+    SQLite.close(db)
+
+    return all_params
+end
+
 function init_task_database(db_path::String, a::Int, b::Int; max_attempts::Int=5)
     for i in 1:max_attempts
         try 
@@ -209,7 +247,7 @@ _forecast_path(base::String, k::Int) = k==0 ? base : replace(base, ".sqlite3" =>
 function save_oos_forecast_sharded!(base::String, model, thread::AbstractString, window::AbstractString,
                                     task_id::Int, results, loss::Real, params; forecast_horizon::Int, max_shards::Int=16)
 
-    params = round.(params, digits=3)
+    #params = round.(params, digits=6)
     results.preds .= round.(results.preds, digits=3)
     results.factor_loadings_1 .= round.(results.factor_loadings_1, digits=3)
     results.factor_loadings_2 .= round.(results.factor_loadings_2, digits=3)
