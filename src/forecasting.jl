@@ -249,20 +249,35 @@ function run_forecast_no_window_database(model::AbstractYieldFactorModel, data::
             all_results[2, ((task_id - in_sample_end) * forecast_horizon + 1):(task_id - in_sample_end + 1) * forecast_horizon] .= collect(1:forecast_horizon) .+ task_id
             all_results[3:end, ((task_id - in_sample_end) * forecast_horizon + 1):(task_id - in_sample_end + 1) * forecast_horizon] .= res
         # collect garbage 
-        GC.gc()
+       
     end
 
     all_results = all_results[sortperm(all_results[:,1]), :]
     all_results = all_results[sortperm(all_results[:,1]), :]
 
+    # round to 3 decimals to save space
+    all_results = round.(all_results; digits=3)
+
+    # factors filtered out of sample 
+    results = predict(model, data)
+    factors_filtered_outofsample = vcat(results.factors, results.states)    
+    factors_filtered_outofsample = round.(factors_filtered_outofsample; digits=3)
 
     fname = string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id,
                    "__", "expanding", "_window_forecasts.csv")
 
 
+    # mkdir if not exists
+    mkpath(dirname(fname))
+
     open(fname, "w") do io
         writedlm(io, all_results', ',')
     end
+
+    writedlm(string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id, "__out_params.csv"), params, ',')
+
+    writedlm(string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id, "__factors_filtered_outofsample.csv"), factors_filtered_outofsample, ',')
+    
 
     return nothing
 end

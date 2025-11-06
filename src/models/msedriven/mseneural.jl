@@ -14,6 +14,8 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
     # Net input 
     net_input::Matrix{Fl}
 
+    transform_bool::Bool
+    
 
     # Constructor
     function MSEDNeuralModel{T}(maturities::Vector{T}, N::Int, M::Int, dynamics::String, random_walk::Bool;
@@ -23,7 +25,7 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
                                model_string::String = "MSEDNeural",
                                results_location::String = "results/",
                                scale_grad::Bool = false,
-                               forget_factor::T = T(0.9)) where T<:Real
+                               forget_factor::T = T(0.9), transform_bool::Bool = true) where T<:Real
         
         specific_transformations = Function[]
         specific_untransformations = Function[]
@@ -102,34 +104,37 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
 
        
         
-        new{T, T, T}(base, net1, net2, net1_dual, net2_dual, net_input)
+        new{T, T, T}(base, net1, net2, net1_dual, net2_dual, net_input, transform_bool)
     end
 
     # Full-fields inner constructor (lets you call with fields directly)
     MSEDNeuralModel{Fl}(base::MSEDrivenBaseModel{Fl,Fβ,Fγ}, net1::Chain, net2::Chain,
-               net1_dual::Chain, net2_dual::Chain, net_input::Matrix{Fl}, ) where {Fl<:Real, Fβ<:Real, Fγ<:Real} =
-    new{Fl, Fβ, Fγ}(base, net1, net2,  net1_dual, net2_dual, net_input, )
+               net1_dual::Chain, net2_dual::Chain, net_input::Matrix{Fl}, transform_bool::Bool) where {Fl<:Real, Fβ<:Real, Fγ<:Real} =
+    new{Fl, Fβ, Fγ}(base, net1, net2,  net1_dual, net2_dual, net_input, transform_bool)
 end
 
 function build(model::MSEDNeuralModel, Z::Matrix{Fγ}, beta::Vector{Fβ}, gamma::Vector{Fγ}, Phi::Matrix{Fβ}, delta::Vector{Fβ}, mu::Vector{Fβ}, A::Vector{Fγ}, B::Vector{Fγ}, omega::Vector{Fγ}, nu::Vector{Fγ}) where {Fβ<:Real, Fγ<:Real}
     base = build(model.base, Z, beta, gamma, Phi, delta, mu, A, B, omega, nu)
     return MSEDNeuralModel{typeof(base.maturities[1])}(
-       base, model.net1, model.net2, model.net1_dual, model.net2_dual, model.net_input
+       base, model.net1, model.net2, model.net1_dual, model.net2_dual, model.net_input, model.transform_bool
     )
 end
 
 
 function get_static_model_type(model::AbstractNeuralMSEDrivenModel)
-    return "NNS"
+    if model.transform_bool
+        return "NNS"
+    else 
+        return "NNS-Anchored"
+    end
 end
 
-
-
-
-@inline function loadθ!(θ::AbstractVector{T}, net::Chain) where T
+@inline function loadθ!(θ::StridedVector{T}, net::Chain) where T
+    
     net[1].weight .= view(θ, 1:3)
     net[1].bias .= view(θ, 4:6)
     net[2].weight .= view(θ, 7:9)'
+    
     return nothing
 end
 
@@ -167,8 +172,8 @@ end
     end
     #println(typeof(gamma))
     # Transform
-    transform_net_1!(z2, net1, model.net_input)
-    transform_net_2!(z3, net2, model.net_input)
+    transform_net_1!(z2, net1, model.net_input, Val(model.transform_bool))
+    transform_net_2!(z3, net2, model.net_input, Val(model.transform_bool))
 
 
     

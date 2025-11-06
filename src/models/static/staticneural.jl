@@ -10,12 +10,16 @@ mutable struct StaticNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: Abstra
 
     net1_dual::Chain
     net2_dual::Chain
-    
+
     # Net input 
     net_input::Matrix{Fl}
 
+    transform_bool::Bool
+    
+
+
     # Constructor
-    function StaticNeuralModel{T}(maturities::Vector{T}, N::Int, M::Int; net_size = 3, activation_func = tanh, bias_bool = false, model_string::String = "NNS", results_location::String = "results/") where T<:Real
+    function StaticNeuralModel{T}(maturities::Vector{T}, N::Int, M::Int; net_size = 3, activation_func = tanh, bias_bool = false, model_string::String = "NNS", results_location::String = "results/", transform_bool::Bool = true) where T<:Real
         
         specific_transformations = Function[]
         specific_untransformations = Function[]
@@ -54,24 +58,31 @@ mutable struct StaticNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: Abstra
             net_input[1, i] = maturities[i]
         end
 
-        new{T, T, T}(base, net1, net2, net1_dual, net2_dual, net_input)
+        # transform_bool
+        
+
+        new{T, T, T}(base, net1, net2, net1_dual, net2_dual, net_input, transform_bool)
     end
 
     # Full-fields inner constructor (lets you call with fields directly)
     StaticNeuralModel{Fl}(base::StaticBaseModel{Fl,Fβ,Fγ}, net1::Chain, net2::Chain,
-               net1_dual::Chain, net2_dual::Chain, net_input::Matrix{Fl}) where {Fl<:Real, Fβ<:Real, Fγ<:Real} =
-    new{Fl, Fβ, Fγ}(base, net1, net2, net1_dual, net2_dual, net_input)
+               net1_dual::Chain, net2_dual::Chain, net_input::Matrix{Fl}, transform_bool::Bool) where {Fl<:Real, Fβ<:Real, Fγ<:Real} =
+    new{Fl, Fβ, Fγ}(base, net1, net2, net1_dual, net2_dual, net_input, transform_bool)
 end
 
 function build(model::StaticNeuralModel, Z::Matrix{Fγ}, beta::Vector{Fβ}, gamma::Vector{Fγ}, Phi::Matrix{Fβ}, delta::Vector{Fβ}, mu::Vector{Fβ}) where {Fβ<:Real, Fγ<:Real}
     base = build(model.base, Z, beta, gamma, Phi, delta, mu)
     return StaticNeuralModel{typeof(base.maturities[1])}(
-       base, model.net1, model.net2, model.net1_dual, model.net2_dual, model.net_input
+       base, model.net1, model.net2, model.net1_dual, model.net2_dual, model.net_input, model.transform_bool
     )
 end
 
 function get_static_model_type(model::AbstractStaticNeuralModel)
-    return "NNS"
+    if model.transform_bool
+        return "NNS"
+    else 
+        return "NNS-Anchored"
+    end
 end
 
 
@@ -109,8 +120,8 @@ end
     end
     
     # Transform
-    transform_net_1!(z2, net1, model.net_input)
-    transform_net_2!(z3, net2, model.net_input)
-    
+    transform_net_1!(z2, net1, model.net_input, Val(model.transform_bool))
+    transform_net_2!(z3, net2, model.net_input, Val(model.transform_bool))
+
     return nothing
 end

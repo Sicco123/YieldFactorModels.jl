@@ -61,35 +61,18 @@ function transform_net_2(net2, maturities; scale = 0.9610)
     return values
 end
 
-# @inline function transform_net_1!(
-#     dest, net, inputs
-# ) 
-#     n = size(inputs, 2)
-#     dest .= vec(net(inputs))                    # one forward over all maturities
-#     T = eltype(dest[1])
-
-#     dest[1] = dest[1] - dest[end-1] + T(1e-7)
-#     dest_inv = T(1) / dest[1]
-#     @inbounds for i in 2:n-2
-#         dest[i] = ((dest[i] - dest[end-1]) * dest_inv)^2
-#     end
-#     dest[1]   = one(T)
-#     dest[n-1] = zero(T)
-#     dest[n]   = zero(T)
-#     return dest
-# end
 
 
 # Generic fallback (works for views, OffsetArrays)
-@inline function transform_net_1!(dest::AbstractVector, net::Chain, inputs::AbstractMatrix)
+@inline function transform_net_1!(dest::AbstractVector, net::Chain, inputs::AbstractMatrix, ::Val{true})
     n = size(inputs, 2)
     # Write the raw forward directly into dest (no extra temp copy)
     dest .= vec(net(inputs))  # vec is a reshape when the output is a vector -> no alloc by itself
 
     T = eltype(dest)
     @inbounds begin
-        raw_first = dest[begin]          # cache raw values before we overwrite
-        raw_last  = dest[end-1]
+        raw_first = dest[1]          # cache raw values before we overwrite
+        raw_last  = dest[n-1]
         inv_first = inv(raw_first  - raw_last + T(1e-7))
 
         # do not touch dest[1] until the very end
@@ -105,13 +88,13 @@ end
 end
 
 # Fast path for contiguous vectors – allows SIMD
-@inline function transform_net_1!(dest::StridedVector{T}, net::Chain, inputs::AbstractMatrix{R}) where {T, R}
+@inline function transform_net_1!(dest::StridedVector{T}, net::Chain, inputs::AbstractMatrix{R}, ::Val{true}) where {T, R}
     n = size(inputs, 2)
     dest .= vec(net(inputs))
 
     @inbounds begin
         raw_first = dest[1]
-        raw_last  = dest[end-1]
+        raw_last  = dest[n-1]
         inv_first = inv(raw_first - raw_last + T(1e-7))
 
         @simd for i in 2:n-2
@@ -125,33 +108,8 @@ end
     return dest
 end
 
-# @inline function transform_net_2!(
-#     dest, net, inputs; scale = 0.9610
-# ) 
-#     n = size(inputs, 2)
-#     dest .= vec(net(inputs))                     # one forward over all maturities
-#     T = eltype(dest[1])
-
-#     slope      = (dest[end] - dest[1]) / (inputs[1,end] - inputs[1,1])
-#     intercept  = dest[1] - slope*inputs[1,1]
-
-#     sum_sq = zero(T)
-#     @inbounds for i in 2:n-1
-#         dest[i]  = (dest[i] - slope*inputs[1,i] + intercept)^2      # ensure positivity
-#         sum_sq  += dest[i]^2
-#     end
-#     dest[1]   = zero(T)
-#     dest[n]   = zero(T)
-
-#     scale_factor = sqrt(sum_sq) / T(scale) + T(1e-7)
-#     @inbounds for i in 1:n
-#         dest[i] /= scale_factor
-#     end
-#     return dest
-# end
-
 # Generic
-@inline function transform_net_2!(dest::AbstractVector{T}, net::Chain, inputs::AbstractMatrix{R}; scale = 0.9610) where {T, R}
+@inline function transform_net_2!(dest::AbstractVector{T}, net::Chain, inputs::AbstractMatrix{R},::Val{true}; scale = 0.9610) where {T, R}
     n = size(inputs, 2)
     dest .= vec(net(inputs))
 
@@ -159,8 +117,8 @@ end
     xN = @inbounds inputs[1, n]
 
     @inbounds begin
-        raw1 = dest[begin]
-        rawN = dest[end]
+        raw1 = dest[1]
+        rawN = dest[n]
 
         slope     = (rawN - raw1) / (xN - x1)
         intercept = raw1 - slope * x1
@@ -187,7 +145,7 @@ end
 end
 
 # Fast path for StridedVector enables SIMD in the main loop too
-@inline function transform_net_2!(dest::StridedVector{T}, net::Chain, inputs::AbstractMatrix{R}; scale = 0.9610) where {T, R}
+@inline function transform_net_2!(dest::StridedVector{T}, net::Chain, inputs::AbstractMatrix{R}, ::Val{true}; scale = 0.9610) where {T, R}
     n = size(inputs, 2)
     dest .= vec(net(inputs))
 
@@ -215,5 +173,76 @@ end
             dest[i] *= inv
         end
     end
+    return dest
+end
+
+
+@inline function transform_net_1!(dest::AbstractVector{T}, net::Chain, inputs::AbstractMatrix{R}, ::Val{false}) where {T, R}
+    n = size(inputs, 2)
+    # Write the raw forward directly into dest (no extra temp copy)
+    dest .= vec(net(inputs))  # vec is a reshape when the output is a vector -> no alloc by itself
+    
+    dest[1] = one(T)
+    dest[n-1] = zero(T)
+    dest[end] = zero(T)
+    
+    return dest
+end
+
+# Fast path for contiguous vectors – allows SIMD
+@inline function transform_net_1!(dest::StridedVector{T}, net::Chain, inputs::AbstractMatrix{R}, ::Val{false}) where {T, R}
+    n = size(inputs, 2)
+    # Write the raw forward directly into dest (no extra temp copy)
+    dest .= vec(net(inputs))  # vec is a reshape when the output is a vector -> no alloc by itself
+    
+    dest[1] = one(T)
+    dest[n-1] = zero(T)
+    dest[end] = zero(T)
+    
+    return dest
+end
+
+# Generic
+@inline function transform_net_2!(dest::AbstractVector{T}, net::Chain, inputs::AbstractMatrix{R}, ::Val{false}; scale = 0.9610) where {T, R}
+    n = size(inputs, 2)
+    dest .= vec(net(inputs))
+    dest[1] = zero(T)
+    dest[n] = zero(T)
+    sum_sq = zero(T)
+    
+    @inbounds for i in 2:n-1
+        dest[i] = dest[i] * dest[i]   # Ensure positivity
+        sum_sq  = muladd(dest[i], dest[i], sum_sq)
+    end
+    
+    denom_inv = T(scale) / sqrt(sum_sq) + T(1e-7)
+
+    @inbounds @simd for i in 2:n-1
+        dest[i] *= denom_inv
+    end
+
+    return dest
+end
+
+# Fast path for StridedVector enables SIMD in the main loop too
+@inline function transform_net_2!(dest::StridedVector{T}, net::Chain, inputs::AbstractMatrix{R}, ::Val{false}; scale = 0.9610) where {T, R}
+    
+    n = size(inputs, 2)
+    dest .= vec(net(inputs))
+    dest[1] = zero(T)
+    dest[n] = zero(T)
+    sum_sq = zero(T)
+    
+    for i in 2:n-1
+        dest[i] = dest[i] * dest[i]   # Ensure positivity
+        sum_sq  = muladd(dest[i], dest[i], sum_sq)
+    end
+    
+    denom_inv = T(scale) / sqrt(sum_sq) + T(1e-7)
+
+    @inbounds @simd for i in 2:n-1
+        dest[i] *= denom_inv
+    end
+
     return dest
 end

@@ -31,7 +31,7 @@ function benchmark()
     beta_test = zeros(3)
     YieldFactorModels.get_β_OLS!(beta_test, Z_test, y_test)
     float_type = Float64
-    model, model_type = YieldFactorModels.create_model("3SSD-NNS", maturities,24, 3, float_type, "YieldFactorModels.jl/results/thread_id__6/")
+    model, model_type = YieldFactorModels.create_model("3SSD-NNS-Anchored", maturities,24, 3, float_type, "YieldFactorModels.jl/results/thread_id__6/")
     param_groups = YieldFactorModels.get_param_groups(model, String[])
     all_params = YieldFactorModels.load_initial_parameters!(model, model_type, float_type)
     YieldFactorModels.set_params!(model, all_params[:, 1])
