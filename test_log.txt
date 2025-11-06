@@ -1,0 +1,46 @@
+NS
+In-sample loss: -0.08665439565694295
+Out-of-sample loss: -0.07211678451014364
+
+NNS
+In-sample loss: -0.08523251790484553
+Out-of-sample loss: -0.07184482333306733
+
+NNS-Anchored
+In-sample loss: -0.0790472040076656
+Out-of-sample loss: -0.07049152347930658
+
+
+SSD-NS 
+In-sample loss: -0.08533733801665909
+Out-of-sample loss array (first 10%): -0.0483092436132985
+Out-of-sample loss array (first 25%): -0.08909639119243838
+Out-of-sample loss array (first 50%): -0.06202315871614402
+Out-of-sample loss array (first 75%): -0.0485077904530072
+Out-of-sample loss array (full): -0.05685465130051954
+
+1SSD-NNS
+In-sample loss: -0.08362415175917907
+Out-of-sample loss array (first 10%): -0.04419748702167861
+Out-of-sample loss array (first 25%): -0.08410724865461831
+Out-of-sample loss array (first 50%): -0.0552156535495388
+Out-of-sample loss array (first 75%): -0.0438271163304701
+Out-of-sample loss array (full): -0.053806518271169286
+
+SSD-NNS-Anchored 
+In-sample loss: -0.07815965571559019
+Out-of-sample loss array (first 10%): -0.0442053446548217
+Out-of-sample loss array (first 25%): -0.09349625205138039
+Out-of-sample loss array (first 50%): -0.06984251998510578
+Out-of-sample loss array (first 75%): -0.05328871144865298
+Out-of-sample loss array (full): -0.0601134985630477
+
+
+
+
+RW 
+In-sample loss: -0.08558779252516142
+Out-of-sample loss: -0.0691788814120469
+
+
+

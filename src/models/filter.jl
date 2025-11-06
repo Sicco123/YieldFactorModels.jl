@@ -1,13 +1,17 @@
 # Cache struct for gradient computation - don't preallocate Dual arrays
-struct GradientCache{C}
+struct GradientCache{C,T}
     cfg::C
     Ztemp_any::Base.RefValue{Any}   # will hold Matrix{<:Real or <:Dual}
     v_any::Base.RefValue{Any}       # will hold Vector{<:Real or <:Dual}
+    ZtZ::Matrix{T}                  # Pre-allocated for Z'Z
+    Zty::Vector{T}                  # Pre-allocated for Z'y
 end
 
-function GradientCache(gamma::AbstractVector{T}) where T
+function GradientCache(gamma::AbstractVector{T}, M::Int) where T
     cfg = ForwardDiff.GradientConfig(nothing, gamma, ForwardDiff.Chunk{length(gamma)}())
-    return GradientCache{typeof(cfg)}(cfg, Ref{Any}(nothing), Ref{Any}(nothing))
+    ZtZ = Matrix{T}(undef, M, M)
+    Zty = Vector{T}(undef, M)
+    return GradientCache{typeof(cfg),T}(cfg, Ref{Any}(nothing), Ref{Any}(nothing), ZtZ, Zty)
 end
 
 
@@ -18,7 +22,7 @@ function initialize_filter(model::AbstractYieldFactorModel)
        base.grad_EWMA .= zeros(eltype(base.gamma), length(base.gamma))
        base.grad_EWMA_count .= [0]
     end
-    return GradientCache(base.gamma)
+    return GradientCache(base.gamma, base.M)
 end
 
 
@@ -56,7 +60,7 @@ function filter(m::AbstractMSEDrivenModel, y::AbstractVector{T}, cache) where T<
     end
     # 1) Get beta OLS
     try
-        get_β_OLS!(m.base.beta, m.base.Z, y)
+        get_β_OLS!(m.base.beta, m.base.Z, y, cache.ZtZ, cache.Zty)
     catch e
         println("Error in OLS calculation: ", e)
         return -Inf
@@ -70,7 +74,7 @@ function filter(m::AbstractMSEDrivenModel, y::AbstractVector{T}, cache) where T<
 
     # 3) Get beta OLS
     try
-        get_β_OLS!(m.base.beta, m.base.Z, y)
+        get_β_OLS!(m.base.beta, m.base.Z, y, cache.ZtZ, cache.Zty)
     catch e
         println("Error in OLS calculation: ", e)
         return -Inf
@@ -94,7 +98,7 @@ function filter(m::AbstractStaticModel, y::AbstractVector{T}, cache) where T<:Re
     end
     # 1) Get beta OLS
     try
-        get_β_OLS!(m.base.beta, m.base.Z, y)
+        get_β_OLS!(m.base.beta, m.base.Z, y, cache.ZtZ, cache.Zty)
     catch e
         println("Error in OLS calculation: ", e)
         return -Inf
@@ -115,12 +119,31 @@ function filter(m::AbstractRandomWalkModel, y::AbstractVector{T}, cache) where T
     return copy(m.last_y)
 end
 
-function get_β_OLS!(beta, Z, y)
+function get_β_OLS!(beta, Z, y, ZtZ, Zty)
     try
-        beta .= cholesky(Z'Z)\(Z'y) 
+        mul!(ZtZ, Z', Z)
+        mul!(Zty, Z', y)
+        F = cholesky!(Symmetric(ZtZ))
+        ldiv!(beta, F, Zty)
     catch e
         M = size(Z, 2)
-        beta .= ((Z' * Z) + 1e-3 * I(M)) \ (Z' * y)
+        mul!(ZtZ, Z', Z)
+        mul!(Zty, Z', y)
+        @views ZtZ[diagind(ZtZ)] .+= 1e-3
+        F = cholesky!(Symmetric(ZtZ))
+        ldiv!(beta, F, Zty)
+    end
+    return nothing
+end
+
+function get_β_OLS!(beta, Z, y)
+    try
+        ldiv!(beta, cholesky!(Z'Z), Z'y)
+    catch e
+        M = size(Z, 2)
+        F = cholesky!(Z'Z + 1e-3*I(M))
+        Zty = Z'y
+        ldiv!(beta, F, Zty)
     end
     return nothing
 end
@@ -171,21 +194,22 @@ function get_loss(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=1 ) w
     pred = similar(data[:,1])
     v = similar(data[:,1])
 
-    @inbounds for k in 0:K-1
-        catch_point = Int(floor(nobs*((0.25) + 0.25*(k)/K)))
+    for k in 0:K-1
+        catch_point = Int(floor(nobs*((0.25) + 0.75*(k)/K)))
         if k > 1
             set_params!(model, catched_params) 
         end 
         for t in 1:nobs-1
             @views pred .= filter(model, data[:, t], cache)
             @views v .= data[:, t+1] .- pred
-            
+
+           
             mse -= dot(v, v)
-            
+
             if isinf(mse) || isnan(mse)
                 return -Inf
             end
-
+        
             if t == catch_point
                 catched_params = copy(get_params(model))
             end
@@ -193,6 +217,44 @@ function get_loss(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=1 ) w
     end
 
     return mse/base.N/nobs/K
+end
+
+function get_loss_array(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=1 ) where T<:Real
+    base = model.base
+    nobs = size(data, 2)
+    cache = initialize_filter(model)
+
+    mse = Vector{T}(undef, nobs -1)
+    fill!(mse, 0.0)
+    
+    catched_params = similar(get_params(model))
+    pred = similar(data[:,1])
+    v = similar(data[:,1])
+
+    @inbounds for k in 0:K-1
+        catch_point = Int(floor(nobs*((0.25) + 0.75*(k)/K)))
+        if k > 1
+            set_params!(model, catched_params) 
+        end 
+        for t in 1:nobs-1
+            @views pred .= filter(model, data[:, t], cache)
+            @views @. v = data[:, t+1] - pred
+
+            mse[t] -= dot(v, v)
+
+            if isinf(mse[t]) || isnan(mse[t])
+                return -Inf
+            end
+        
+            if t == catch_point
+                catched_params = copy(get_params(model))
+            end
+        end
+    end
+
+    # In-place division to avoid allocation
+    @. mse = mse / base.N / K
+    return mse
 end
 
 

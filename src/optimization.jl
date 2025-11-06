@@ -157,7 +157,7 @@ function estimate_steps!(
 
     end
     
-    
+    println(all_params)
     # Create loss function closure
     loss_wrapper(p) = compute_loss(model, data, p)
    

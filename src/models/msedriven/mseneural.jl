@@ -1,17 +1,13 @@
 ### MSEDNeural - Neural Network Based MSED Model
 
-struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMSEDrivenModel
+struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real, F1, F2} <: AbstractNeuralMSEDrivenModel
     # Base
     base::MSEDrivenBaseModel{Fl, Fβ, Fγ} 
     
     # Neural Networks    
-    net1::Chain
-    net2::Chain
+    net1::F1
+    net2::F2
 
-    net1_dual::Chain
-    net2_dual::Chain
-
-    # Net input 
     net_input::Matrix{Fl}
 
     transform_bool::Bool
@@ -64,23 +60,13 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
         B_guesses = random_walk ? T[] : T[0.97, 0.98, 0.99, 0.999]
 
         # Initialize neural networks
-        net1 = Chain(Dense(1, net_size, activation_func), Dense(net_size, 1; bias = bias_bool))
-        net2 = Chain(Dense(1, net_size, activation_func), Dense(net_size, 1; bias = bias_bool))
-        if T == Float32
-            net1 = f32(net1)
-            net2 = f32(net2)
-        else 
-            net1 = f64(net1)
-            net2 = f64(net2)
-        end
+        net1 = Chain(Dense(1 => net_size, activation_func), Dense(net_size, 1; use_bias = bias_bool))
+        net2 = Chain(Dense(1 => net_size, activation_func), Dense(net_size, 1; use_bias = bias_bool))
 
-        _, build_net1 = Flux.destructure(net1)
-        _, build_net2 = Flux.destructure(net2)
 
-        dual_params = ForwardDiff.Dual{Nothing, T, 18}.(randn(T, 18))
-        net1_dual = build_net1(dual_params[1:9])
-        net2_dual = build_net2(dual_params[10:18])
-        
+        rng = Random.default_rng()
+        _, states = Lux.setup(rng, net1)
+        state_dummy = states
         
         
         # append identity transformations for the net params
@@ -94,6 +80,7 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
                                      A_guesses, B_guesses, model_string;
                                      scale_grad=scale_grad, forget_factor=forget_factor, results_location=results_location)
 
+        
 
 
         # Pre-allocate net input
@@ -102,21 +89,22 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractNeuralMS
             net_input[1, i] = maturities[i]
         end
 
-       
-        
-        new{T, T, T}(base, net1, net2, net1_dual, net2_dual, net_input, transform_bool)
+        fnet1 = (p) -> net1(net_input, shapeγ(p), state_dummy)[1]
+        fnet2 = (p) -> net2(net_input, shapeγ(p), state_dummy)[1]
+
+        new{T, T, T, typeof(fnet1), typeof(fnet2)}(base, fnet1, fnet2, net_input, transform_bool)
     end
 
     # Full-fields inner constructor (lets you call with fields directly)
-    MSEDNeuralModel{Fl}(base::MSEDrivenBaseModel{Fl,Fβ,Fγ}, net1::Chain, net2::Chain,
-               net1_dual::Chain, net2_dual::Chain, net_input::Matrix{Fl}, transform_bool::Bool) where {Fl<:Real, Fβ<:Real, Fγ<:Real} =
-    new{Fl, Fβ, Fγ}(base, net1, net2,  net1_dual, net2_dual, net_input, transform_bool)
+    MSEDNeuralModel{Fl}(base::MSEDrivenBaseModel{Fl,Fβ,Fγ}, net1::F1, net2::F2,
+               net_input::Matrix{Fl}, transform_bool::Bool) where {Fl<:Real, Fβ<:Real, Fγ<:Real, F1, F2} =
+    new{Fl, Fβ, Fγ, F1, F2}(base, net1, net2, net_input, transform_bool)
 end
 
 function build(model::MSEDNeuralModel, Z::Matrix{Fγ}, beta::Vector{Fβ}, gamma::Vector{Fγ}, Phi::Matrix{Fβ}, delta::Vector{Fβ}, mu::Vector{Fβ}, A::Vector{Fγ}, B::Vector{Fγ}, omega::Vector{Fγ}, nu::Vector{Fγ}) where {Fβ<:Real, Fγ<:Real}
     base = build(model.base, Z, beta, gamma, Phi, delta, mu, A, B, omega, nu)
     return MSEDNeuralModel{typeof(base.maturities[1])}(
-       base, model.net1, model.net2, model.net1_dual, model.net2_dual, model.net_input, model.transform_bool
+       base, model.net1, model.net2,  model.net_input, model.transform_bool
     )
 end
 
@@ -129,23 +117,22 @@ function get_static_model_type(model::AbstractNeuralMSEDrivenModel)
     end
 end
 
-@inline function loadθ!(θ::StridedVector{T}, net::Chain) where T
-    
-    net[1].weight .= view(θ, 1:3)
-    net[1].bias .= view(θ, 4:6)
-    net[2].weight .= view(θ, 7:9)'
-    
-    return nothing
+@inline function shapeγ(γ::StridedVector{T}) where T
+
+    params = (
+        layer_1 = (
+            weight = reshape(view(γ, 1:3), 3, 1),
+            bias = view(γ, 4:6)
+        ),
+        layer_2 = (
+            weight = reshape(view(γ, 7:9), 1, 3),
+        ),
+    )
+
+    return params
 end
 
-# Simpler, more idiomatic approach
-@inline function _get_networks(model::AbstractNeuralMSEDrivenModel, ::Type{T}) where T
-    if T <: AbstractFloat
-        return model.net1, model.net2
-    else  # Dual
-        return model.net1_dual, model.net2_dual
-    end
-end
+
 
 @inline function update_factor_loadings!(
     model::AbstractNeuralMSEDrivenModel, 
@@ -153,27 +140,22 @@ end
     Z::AbstractMatrix{R}
 ) where {T <: Real, R <: Real}
     
-    # Direct type dispatch - simpler and equally efficient
-    net1, net2 = _get_networks(model, T)
-    
+
     # Pre-compute views to avoid repeated indexing
-    gamma1 = @view gamma[1:9]
-    gamma2 = @view gamma[10:18]
     z2 = @view Z[:, 2]
     z3 = @view Z[:, 3]
-    
-    # Load parameters
-    loadθ!( gamma1, net1)
-    loadθ!( gamma2, net2)
     
     # Set first column to ones if needed (more robust check)
     if Z[1, 1] != one(T)
         Z[:, 1] .= one(T)
     end
+    
+    z2 .= model.net1(@view gamma[1:9])'
+    z3 .= model.net2(@view gamma[10:18])'
     #println(typeof(gamma))
     # Transform
-    transform_net_1!(z2, net1, model.net_input, Val(model.transform_bool))
-    transform_net_2!(z3, net2, model.net_input, Val(model.transform_bool))
+    transform_net_1!(z2, model.net_input, Val(model.transform_bool))
+    transform_net_2!(z3, model.net_input, Val(model.transform_bool))
 
 
     

@@ -7,9 +7,8 @@ module YieldFactorModels
     using Statistics
     using DelimitedFiles
     using Printf
-    using Flux
+    using Lux
     using LineSearches
-    using Flux: destructure
     using Zygote
     using ForwardDiff
     using DiffResults
@@ -280,9 +279,7 @@ module YieldFactorModels
         # ========================================================================
         # Compute in-sample loss
         # ========================================================================
-        set_params!(model, params)
-        loss = get_loss(model, data[:, 1:in_sample_end])
-        println("In-sample loss: $loss")
+ 
 
         # ========================================================================
         # Save results
@@ -292,10 +289,25 @@ module YieldFactorModels
             results = predict(model, data[:, 1:in_sample_end])
             save_results(model, results, loss, thread_id, "insample")
 
+            set_params!(model, params)
+            loss = get_loss(model, data[:, 1:in_sample_end])
+            println("In-sample loss: $loss")
+
             # Out-of-sample filtering
             results = predict(model, data[:, 1:end])
             save_results(model, results, loss, thread_id, "outofsample")
-        end 
+            
+            loss_array = get_loss_array(model, data[:, 1:end]; K = 1)
+            out_of_sample_loss_array = loss_array[in_sample_end+1:end]
+
+            # print first sum of 10 percent of out-of-sample losses, 25%, 50% of the sample and then 75 percent and 100 percent
+            println("Out-of-sample loss array (first 10%): ", mean(out_of_sample_loss_array[1:Int(floor(0.1*length(out_of_sample_loss_array)))]))
+            println("Out-of-sample loss array (first 25%): ", mean(out_of_sample_loss_array[1:Int(floor(0.25*length(out_of_sample_loss_array)))]))
+            println("Out-of-sample loss array (first 50%): ", mean(out_of_sample_loss_array[1:Int(floor(0.5*length(out_of_sample_loss_array)))]))
+            println("Out-of-sample loss array (first 75%): ", mean(out_of_sample_loss_array[1:Int(floor(0.75*length(out_of_sample_loss_array)))]))
+            println("Out-of-sample loss array (full): ", mean(out_of_sample_loss_array))
+
+        end
 
         # ========================================================================
         # Rolling window forecasts
