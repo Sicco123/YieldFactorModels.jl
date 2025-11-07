@@ -33,7 +33,7 @@ function try_initializations(best_params, model::AbstractYieldFactorModel, data)
     return best_params
 end
 
-function try_initializations(best_params, model::AbstractStaticModel, data; max_tries=10)
+function try_initializations(best_params, model::AbstractStaticModel, data; max_tries=1)
     # stack all new intializations in matrix 
     all_params = zeros(eltype(best_params), length(best_params), max_tries + 1)
     all_params[:, 1] = best_params
@@ -43,7 +43,7 @@ function try_initializations(best_params, model::AbstractStaticModel, data; max_
     return all_params
 end
 
-function try_initializations(best_params, model::AbstractRandomWalkModel, data; max_tries=10)
+function try_initializations(best_params, model::AbstractRandomWalkModel, data; max_tries=1)
     # stack all new intializations in matrix 
     all_params = zeros(eltype(best_params), length(best_params), 1)
     all_params[:, 1] = best_params
@@ -275,6 +275,7 @@ function estimate_steps!(
 
         end
         
+ 
         # Store results
         all_results[j] = (all_params[:, j], prev_ll, copy(p), 0)
         
@@ -294,6 +295,7 @@ function estimate_steps!(
     # Transform back to constrained space
     best_p = transform_params(model, best_p)
     init_p = transform_params(model, init_p)
+
 
     if printing
         println("\n" * "="^60)
@@ -437,7 +439,7 @@ function _create_optimizer_dict(opts, optimizers, T; printing::Bool=true)
             g_tol = 1e-6,
             f_abstol = 1e-6,
             show_trace = printing,
-            show_every = 10,
+            show_every = 100,
             store_trace = false,
             extended_trace = false,
             allow_f_increases = true
@@ -448,7 +450,7 @@ function _create_optimizer_dict(opts, optimizers, T; printing::Bool=true)
             g_tol = 1e-6,
             f_abstol = 1e-6,
             show_trace = printing,
-            show_every = 10,
+            show_every = 100,
             store_trace = false,
             extended_trace = false,
             allow_f_increases = false

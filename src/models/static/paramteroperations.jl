@@ -95,3 +95,20 @@ function get_new_initial_params(model::AbstractStaticModel, params::AbstractVect
     params[1:end-(base.M*(base.M + 1))] .+= random_draws
     return params
 end
+
+function get_new_initial_params(model::AbstractStaticNeuralModel, params::AbstractVector, trial::Int)
+    base = model.base
+    
+    # set rng 
+    Random.seed!(trial)
+
+    # first 3 get standard normal init
+    params[1:3] .= randn(3) / 10
+    params[4:6] .= zeros(3)
+    params[7:9] .= randn(3) / 10
+    params[10:12] .= randn(3) / 10
+    params[13:15] .= zeros(3)
+    params[16:18] .= randn(3) / 10
+    
+    return params
+end

@@ -11,7 +11,7 @@ function save_results(model::AbstractYieldFactorModel, results, loss, thread_Id:
         model_string = model.base.model_string
 
         params = get_params(model)
-   
+
         # Save filtered and smoothed states
         writedlm(string(model.base.results_folder, model_string, "__thread_id__", thread_Id, "__factors_filtered_", data_type, ".csv"), 
                 vcat(results.factors, results.states)', ',')
@@ -24,6 +24,9 @@ function save_results(model::AbstractYieldFactorModel, results, loss, thread_Id:
 
         writedlm(string(model.base.results_folder, model_string, "__thread_id__", thread_Id, "__loss.csv"), 
                         [loss], ',')
+
+        println("Print io params: ")
+        println(string(model.base.results_folder, model_string, "__thread_id__", thread_Id, "__out_params.csv"))
         writedlm(string(model.base.results_folder, model_string, "__thread_id__", thread_Id, "__out_params.csv"),                        params, ',')
         end
 

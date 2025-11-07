@@ -127,6 +127,7 @@ function initialize_with_static_params(model::AbstractMSEDrivenModel, params::Ab
     return params
 end
 
+
 # Get new initial parameters for optimization trials
 function get_new_initial_params(model::AbstractMSEDrivenModel, params::AbstractVector, trial::Int)
     base = model.base

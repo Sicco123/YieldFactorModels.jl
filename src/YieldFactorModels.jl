@@ -267,7 +267,7 @@ module YieldFactorModels
             println("The param groups are : ", param_groups)
             init_params, loss, params, ir = run_estimation!(
                 model, data, in_sample_end, all_params, param_groups, 
-                max_group_iters, group_tol
+                max_group_iters, group_tol; printing = false
             )
         else  
             init_params = all_params[:, 1]
@@ -287,9 +287,10 @@ module YieldFactorModels
         if save_results_bool
             # In-sample results
             results = predict(model, data[:, 1:in_sample_end])
+            set_params!(model, params)
+            
             save_results(model, results, loss, thread_id, "insample")
 
-            set_params!(model, params)
             loss = get_loss(model, data[:, 1:in_sample_end])
             println("In-sample loss: $loss")
 
