@@ -33,10 +33,13 @@ function try_initializations(best_params, model::AbstractYieldFactorModel, data)
     return best_params
 end
 
-function try_initializations(best_params, model::AbstractStaticModel, data; max_tries=1)
+function try_initializations(best_params, model::AbstractStaticModel, data; max_tries=50)
     # stack all new intializations in matrix 
     all_params = zeros(eltype(best_params), length(best_params), max_tries + 1)
     all_params[:, 1] = best_params
+    if max_tries == 0
+        return all_params
+    end
     for trial in 1:max_tries
         all_params[:, trial+1] = get_new_initial_params(model, best_params, trial)
     end

@@ -252,8 +252,8 @@ function run_forecast_no_window_database(model::AbstractYieldFactorModel, data::
        
     end
 
-    all_results = all_results[sortperm(all_results[:,1]), :]
-    all_results = all_results[sortperm(all_results[:,1]), :]
+    all_results = all_results[:,sortperm(all_results[1,:])]
+    all_results = all_results[:, sortperm(all_results[2,:])]
 
     # round to 3 decimals to save space
     all_results = round.(all_results; digits=3)
