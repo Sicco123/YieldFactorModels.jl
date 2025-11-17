@@ -10,7 +10,7 @@ function set_params!(model::AbstractDNSModel, params::AbstractVector)
 
     k = 1
     model.base.gamma .= params[k]
-    model.lambda .= params[k]
+
     k += 1
     
     model.base.Omega_obs .= Matrix(I, model.base.N, model.base.N) * params[k]
@@ -19,28 +19,27 @@ function set_params!(model::AbstractDNSModel, params::AbstractVector)
     # Fill Omega_state matrix using double loop
     M = model.base.M
     for j in 1:M
-        for i in i:M
+        for i in 1:M
             if i == j
                 # Diagonal elements: use exp transformation
-                model.base.Omega_state[i, j] = params[k] # make sure that this one is positive
-            elseif i < j
-                # Off-diagonal elements: use as is
                 model.base.Omega_state[i, j] = params[k]
-            elseif i > j
-                # Lower triangular part: mirror the upper triangular part
+                k += 1
+            elseif i < j
+                # Upper triangular off-diagonal elements
+                model.base.Omega_state[i, j] = params[k]
+                k += 1
+            else
+                # Lower triangular part: set to zero
                 model.base.Omega_state[i, j] = T(0.0)
             end
-            k += 1
         end
     end
 
     model.base.Omega_state .= model.base.Omega_state' * model.base.Omega_state
-    k += Int(((M*M)-M) / 2 + M)
     model.base.delta .= params[k:k+M-1]
     k += M
     model.base.Phi .= reshape(params[k:k+M*M-1], M, M)'
     k += M*M
-    
     update_factor_loadings!(model, model.base.gamma, model.base.Z)
 
 end

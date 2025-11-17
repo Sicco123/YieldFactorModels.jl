@@ -1,8 +1,6 @@
 ### YieldFactorModels Base
-abstract type AbstractYieldFactorModel end
 abstract type AbstractKalmanModel <: AbstractYieldFactorModel end
 abstract type AbstractDNSModel <: AbstractKalmanModel end
-
 
 struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
     maturities::Vector{Fl}
@@ -27,6 +25,9 @@ struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
     v::Vector{Fβ}
     F::Matrix{Fβ}
     F_inv::Matrix{Fβ}
+    temp_NxM::Matrix{Fβ}
+    temp_MxN::Matrix{Fβ}
+
 
     transformations::Vector{Function}
     untransformations::Vector{Function}
@@ -43,7 +44,6 @@ struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
     # scaling behaviour. Defaults disable scaling.
     function KalmanBaseModel{Fl}(
         maturities::Vector{Fl}, N::Int, M::Int, L::Int,
-        duplicator::Vector{Int}, random_walk::Bool,
         specific_transformations::Vector{Function},
         specific_untransformations::Vector{Function},
          model_string; results_location::String = "results/"
@@ -64,22 +64,40 @@ struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
         v = zeros(Fl, N)
         F = zeros(Fl, N, N)
         F_inv = zeros(Fl, N, N)
+        temp_NxM = zeros(Fl, N, M)
+        temp_MxN = zeros(Fl, M, N)
+
+         # Define common transformations
 
 
 
         transformations = [
             specific_transformations...,
+            from_R_to_pos, 
+            from_R_to_pos,
+            identity,
+            from_R_to_pos,
+            identity,
+            identity,
+            from_R_to_pos,
             fill(identity, M)...,
             from_R_to_11, fill(identity, M)...,
             from_R_to_11, fill(identity, M)...,
-            from_R_to_11, from_R_to_pos
+            from_R_to_11
         ]
         untransformations = [
             specific_untransformations...,
+            from_pos_to_R,
+            from_pos_to_R,
+            identity, 
+            from_pos_to_R, 
+            identity,
+            identity, 
+            from_pos_to_R,
             fill(identity, 3)...,
             from_11_to_R, fill(identity, M)...,
             from_11_to_R, fill(identity, M)...,
-            from_11_to_R, from_pos_to_R
+            from_11_to_R
         ]
 
         init_folder    = "YieldFactorModels.jl/initializations/$(model_string)/"
@@ -87,9 +105,9 @@ struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
         flat_params = zeros(Fl, length(transformations))
         
         return new{Fl,Fl}(maturities, N, M, L, Z, beta, Phi, delta, gamma,
-                              Omega_state, Omega_obs, P, In, y_pred, v, F, F_inv,
-                              transformations, untransformations,
-                              init_folder, results_folder, model_string, flat_params)
+                              Omega_state, Omega_obs, P, In, y_pred, v, F, F_inv, temp_NxM, temp_MxN,
+                              transformations, untransformations, flat_params, 
+                              init_folder, results_folder, model_string )
     end
 
     # Full-fields inner constructor (lets you call with fields directly)
@@ -102,7 +120,7 @@ struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
         transformations::Vector{Function}, untransformations::Vector{Function},
         init_folder::String, results_folder::String, model_string::String 
     ) where {Fl<:Real,Fβ<:Real} =
-    new{Fl,Fβ,Fγ}(maturities, N, M, L, Z, beta, Phi, delta, gamma,
+    new{Fl,Fβ}(maturities, N, M, L, Z, beta, Phi, delta, gamma,
                       Omega_state, Omega_obs, P, In, y_pred, v, F, F_inv,
                       transformations, untransformations,
                       init_folder, results_folder, model_string)

@@ -34,6 +34,10 @@ module YieldFactorModels
     include("models/static/staticlambda.jl")
     include("models/static/randomwalk.jl")
     include("models/static/paramteroperations.jl")
+    include("models/kalman/kalmanbasemodel.jl")
+    include("models/kalman/dns.jl")
+    include("models/kalman/filter.jl")
+    include("models/kalman/paramoperations.jl")
     include("models/filter.jl")
 
     # Utility files
@@ -278,7 +282,7 @@ module YieldFactorModels
             println("The param groups are : ", param_groups)
             init_params, loss, params, ir = run_estimation!(
                 model, data, in_sample_end, all_params, param_groups, 
-                max_group_iters, group_tol; printing = false
+                max_group_iters, group_tol; printing = true
             )
         else  
             init_params = all_params[:, 1]

@@ -9,7 +9,8 @@ function create_model(model_type::String, maturities::Vector, N::Int, M::Int, fl
     maturities = convert(Vector{float_type}, maturities)
     # Model type mapping and initialization
     if model_type == "1C" || model_type == "0"
-        model = nothing 
+        model = DNSModel{float_type}(maturities, N, M; model_string=model_type, results_location=results_location)
+        model_type = "1C"  
     elseif model_type == "TVλ" || model_type == "1"
         model = nothing
     elseif model_type == "NS" || model_type == "2"
@@ -108,6 +109,7 @@ function create_model(model_type::String, maturities::Vector, N::Int, M::Int, fl
     elseif model_type == "3SRWSD-NNS-Anchored" || model_type == "32"
         model = MSEDNeuralModel{float_type}(maturities, N, M, "diag", true; model_string=model_type, scale_grad=true, results_location=results_location, transform_bool=false)
         model_type = "3SRWSD-NNS-Anchored"
+
     elseif model_type == "pC" || model_type == "1100" 
         model = nothing
         model_type = "pC"
