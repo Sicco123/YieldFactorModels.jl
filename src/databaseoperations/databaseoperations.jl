@@ -429,8 +429,8 @@ function export_forecast_csv(model,thread_Id::AbstractString, tasks, ; window_ty
     catch
         forecastingResults = convert.(Float32, forecastingResults)
     end
-    forecastingResults = forecastingResults[sortperm(forecastingResults[:,1]), :]
     forecastingResults = forecastingResults[sortperm(forecastingResults[:,2]), :]
+    forecastingResults = forecastingResults[sortperm(forecastingResults[:,1]), :]
     writedlm(final, forecastingResults, ',')
     rm(tmp; force=true)
     return final

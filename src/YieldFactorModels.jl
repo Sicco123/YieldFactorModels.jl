@@ -102,6 +102,7 @@ module YieldFactorModels
     function load_static_parameters!(model, model_type::String, results_location::String, thread_id::String, params)
         static_model_name = get_static_model_type(model)
         try 
+            
             static_params = readdlm(
                 string(results_location,  static_model_name, "/", 
                         static_model_name, "__thread_id__", thread_id, "__out_params.csv"), 
@@ -122,10 +123,20 @@ module YieldFactorModels
     """
 
 
-    function load_initial_parameters!(model, model_type::String, float_type::Type)
+    function load_initial_parameters!(model, model_type::String, float_type::Type; simulation=false)
         all_params = nothing
         try
-            all_params = readdlm(string(model.base.init_folder, "init_params_", model_type, ".csv"), ',')
+            if simulation
+                # if simulation file exists otherwise fall back to normal
+                if isfile(string(model.base.init_folder, "init_params_", model_type, "_simulation.csv"))
+                    all_params = readdlm(string(model.base.init_folder, "init_params_", model_type, "_simulation.csv"), ',')
+                else
+                    all_params = readdlm(string(model.base.init_folder, "init_params_", model_type, ".csv"), ',')
+                end
+           
+            else
+                all_params = readdlm(string(model.base.init_folder, "init_params_", model_type, ".csv"), ',')
+            end
         catch err
             @warn ("Initial parameters for $(model_type) not found in $(model.base.init_folder). Writing file with random initial parameters...")
             num_params = length(get_params(model))
@@ -250,7 +261,7 @@ module YieldFactorModels
         # Load and set parameters
         # ========================================================================
         param_groups = get_param_groups(model, param_groups)
-        all_params = load_initial_parameters!(model, model_type, float_type)
+        all_params = load_initial_parameters!(model, model_type, float_type; simulation=simulation)
         set_params!(model, all_params[:, 1])
         
 

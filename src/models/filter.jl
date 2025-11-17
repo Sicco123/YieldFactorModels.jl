@@ -183,6 +183,29 @@ function get_grad_gamma!(cache::GradientCache, m, beta, gamma, Z_proto, y)
     return DiffResults.gradient(res)
 end
 
+function get_grad_gamma_alt!(cache::GradientCache, m, beta, gamma, Z_proto, y)
+    cfg = cache.cfg
+    
+    # scalar loss (log-likelihood) over gamma, reusing scratch
+    function llf(p)
+        Z_temp, v = _buffers!(cache, ForwardDiff.value.(Z_proto), y, p)
+        update_factor_loadings!(m, p, Z_temp)  # writes into Z_temp
+        # Promote y to dual type to track derivatives
+        y_dual = similar(v)
+        y_dual .= y
+        
+        # Solve for beta (more stable than inv)
+        beta_temp = Z_temp \ y_dual
+        mul!(v, Z_temp, beta_temp)                  # v = Z_temp * beta_temp
+        @. v = y_dual - v
+        return -dot(v, v)
+    end
+
+    res = DiffResults.GradientResult(gamma)
+    ForwardDiff.gradient!(res, llf, gamma, cfg)
+    return DiffResults.gradient(res)
+end
+
 function get_loss(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=1 ) where T<:Real
     base = model.base
     nobs = size(data, 2)
