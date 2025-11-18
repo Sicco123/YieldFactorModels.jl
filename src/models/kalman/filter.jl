@@ -12,7 +12,7 @@ end
 function filter!(m::AbstractTVλDNSModel, y::AbstractVector{T}, cache) where T<:Real
     if any(isnan.(y))
         update_factor_loadings!(m, m.base.beta[4:4], m.base.Z)
-        @views mul!(m.base.y_pred, m.base.Z, m.base.beta[1:3])
+        @views mul!(m.base.y_pred, m.base.Z[:,1:3], m.base.beta[1:3])
        
         # Use preallocated buffers to avoid allocations
         @views temp_beta = m.base.temp_MxN[:, 1]  # reuse temp_MxN first column
@@ -123,9 +123,9 @@ end
 # end
 
 function filter!(m::AbstractKalmanModel, y::AbstractVector{T}, cache) where T<:Real
+    if any(isnan.(y))        
+        m.base.y_pred .= m.base.Z * m.base.beta
 
-    
-    if any(isnan.(y))
         # Use preallocated buffers to avoid allocations
         @views temp_beta = m.base.temp_MxN[:, 1]  # reuse temp_MxN first column
         mul!(temp_beta, m.base.Phi, m.base.beta)
@@ -269,6 +269,14 @@ function predict(model::AbstractKalmanModel, data::Matrix{T}; K::Int=3) where T<
             factor_loadings_2[:, t-1] = copy(base.Z[:, 3])
         end
     end
+
+    # prediction step
+    filter!(model, fill(NaN, size(data, 1)) , cache)
+    preds[:, end] = base.y_pred
+    factors[:, end] = base.beta
+    states[:, end] = base.gamma
+    factor_loadings_1[:, end] = copy(base.Z[:, 2])
+    factor_loadings_2[:, end] = copy(base.Z[:, 3])
 
     return (preds=preds, factors=factors, states=states, factor_loadings_1=factor_loadings_1, factor_loadings_2=factor_loadings_2)
 end
