@@ -12,7 +12,8 @@ function create_model(model_type::String, maturities::Vector, N::Int, M::Int, fl
         model = DNSModel{float_type}(maturities, N, M; model_string=model_type, results_location=results_location)
         model_type = "1C"  
     elseif model_type == "TVλ" || model_type == "1"
-        model = nothing
+        model = TVλDNSModel{float_type}(maturities, N, M; model_string=model_type, results_location=results_location)
+        model_type = "TVλ"
     elseif model_type == "NS" || model_type == "2"
         model = StaticλModel{float_type}(maturities, N, M; model_string=model_type, results_location=results_location)
         model_type = "NS"

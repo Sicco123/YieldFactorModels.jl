@@ -9,6 +9,7 @@ Transforms parameters, updates model, and returns scaled negative loss.
 """
 function compute_loss(model::AbstractYieldFactorModel, data, params)
     # Transform parameters to constrained space
+
     transformed_params = transform_params(model, params)
     
     #temp_model = get_temp_model(model, transformed_params)
@@ -167,6 +168,7 @@ function estimate_steps!(
 
     # Validate initial parameters
     ll = -loss_wrapper(all_params[:, 1])
+    
 
     for i in 1:10
         if !isfinite(ll) || isnan(ll)

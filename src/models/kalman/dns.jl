@@ -53,6 +53,7 @@ function update_factor_loadings!(model::AbstractDNSModel, gamma, Z)
     R = eltype(gamma)
     
     λ = R(1e-2) .+ exp.(gamma)
+  
     tau_maturities = λ .* model.base.maturities
     z_i = exp.(-tau_maturities)
 

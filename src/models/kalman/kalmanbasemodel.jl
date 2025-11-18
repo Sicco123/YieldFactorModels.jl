@@ -1,6 +1,7 @@
 ### YieldFactorModels Base
 abstract type AbstractKalmanModel <: AbstractYieldFactorModel end
 abstract type AbstractDNSModel <: AbstractKalmanModel end
+abstract type AbstractTVλDNSModel <: AbstractKalmanModel end
 
 struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
     maturities::Vector{Fl}
@@ -70,34 +71,52 @@ struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
          # Define common transformations
 
 
+        state_covariance_transformations = Function[]
+        state_covariance_untransformations = Function[]
+        for i in 1:M 
+            for j in 1:M
+                if i == j
+                    push!(state_covariance_transformations, from_R_to_pos)
+                    push!(state_covariance_untransformations, from_pos_to_R)
+                elseif j < i
 
+                    push!(state_covariance_transformations, identity)
+                    push!(state_covariance_untransformations, identity)
+                else
+                    continue
+                end
+            end
+        end
+
+
+        phi_transforms = Function[]
+        phi_untransforms = Function[]
+        for i in 1:M
+            for j in 1:M
+                if i == j
+                    push!(phi_transforms, from_R_to_11)
+                    push!(phi_untransforms, from_11_to_R)
+                else
+                    push!(phi_transforms, identity)
+                    push!(phi_untransforms, identity)
+                end
+            end
+        end
+       
         transformations = [
             specific_transformations...,
             from_R_to_pos, 
-            from_R_to_pos,
-            identity,
-            from_R_to_pos,
-            identity,
-            identity,
-            from_R_to_pos,
+            state_covariance_transformations...,
             fill(identity, M)...,
-            from_R_to_11, fill(identity, M)...,
-            from_R_to_11, fill(identity, M)...,
-            from_R_to_11
+            phi_transforms...,
         ]
+       
         untransformations = [
             specific_untransformations...,
             from_pos_to_R,
-            from_pos_to_R,
-            identity, 
-            from_pos_to_R, 
-            identity,
-            identity, 
-            from_pos_to_R,
-            fill(identity, 3)...,
-            from_11_to_R, fill(identity, M)...,
-            from_11_to_R, fill(identity, M)...,
-            from_11_to_R
+            state_covariance_untransformations...,
+            fill(identity, M)...,
+            phi_untransforms...
         ]
 
         init_folder    = "YieldFactorModels.jl/initializations/$(model_string)/"
