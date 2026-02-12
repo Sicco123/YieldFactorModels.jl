@@ -9,6 +9,10 @@ using Pkg
 Pkg.add("https://github.com/Sicco123/YieldFactorModels.jl.git")
 ```
 
+## Download Data
+Download the yield curve data from https://sites.google.com/view/jingcynthiawu/yield-data?authuser=0. 
+Store the data in the 'data' folder. 
+
 ## Usage
 
 ```julia
