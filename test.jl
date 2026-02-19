@@ -5,8 +5,6 @@ Pkg.instantiate()
 
 # Import the package and required dependencies
 using YieldFactorModels
-using LinearAlgebra
-using ForwardDiff
 using Random
 
 #Random.seed!(123)  # For reproducibility
@@ -14,13 +12,9 @@ using Random
 cd("..")
 
 println(pwd())
-# NOTE: `export VAR=...` is a shell command and is not valid Julia syntax in a code cell.
-# For runtime settings that can be changed from within Julia use `ENV` or library APIs.
-# Set BLAS / native libraries thread knobs where possible:
 ENV["OPENBLAS_NUM_THREADS"] = "1"
 ENV["OMP_NUM_THREADS"] = "1"
-ENV["MKL_NUM_THREADS"] = "1"  # If MKL.jl is used, prefer MKL.set_num_threads(1)
-# Also set BLAS threads from Julia (affects LinearAlgebra.BLAS):
+ENV["MKL_NUM_THREADS"] = "1"  
 LinearAlgebra.BLAS.set_num_threads(1)
 
 function main()
