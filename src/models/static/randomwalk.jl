@@ -8,7 +8,7 @@ struct RandomWalkModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractRandomWa
     last_y::Vector{Fl}
 
     # Constructor
-    function RandomWalkModel{T}(maturities::Vector{T}, N::Int, M::Int;  model_string::String = "NS", results_location::String = "results/") where T<:Real
+    function RandomWalkModel{T}(maturities::Vector{T}, N::Int, M::Int;  model_string::String = "RW", results_location::String = "results/") where T<:Real
 
         specific_transformations = Function[]
         specific_untransformations = Function[]
@@ -39,7 +39,7 @@ function build(model::AbstractRandomWalkModel, Z::Matrix{Fγ}, beta::Vector{Fβ}
 end
 
 function get_static_model_type(model::AbstractRandomWalkModel)
-    return ""
+    return "RW"
 end
 
 

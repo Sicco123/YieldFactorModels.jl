@@ -70,7 +70,7 @@ function get_static_model_type(model::AbstractStaticNeuralModel)
     if model.transform_bool
         return "NNS"
     else 
-        return "NNS-Anchored"
+        return "NNS-Not-Anchored"
     end
 end
 

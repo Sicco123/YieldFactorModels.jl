@@ -35,7 +35,7 @@ function filter!(m::AbstractTVλDNSModel, y::AbstractVector{T}, cache) where T<:
     
     @views Z_dot = m.base.Z
     
-    dlambda_da4 = (m.lambda .- 1e-2)  # derivative of lambda w.r.t. beta4 
+    dlambda_da4 = m.lambda .* (1 .- m.lambda)  # derivative of logistic lambda w.r.t. beta4
 
     @views dZ1_dlambda = m.base.temp_NxM[1:m.base.N, 1]  # reuse temp_NxM for dZ1_dlambda
     @views dZ2_dlambda = m.base.temp_NxM[1:m.base.N, 2] 

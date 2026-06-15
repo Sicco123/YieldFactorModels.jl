@@ -223,7 +223,7 @@ function estimate_steps!(
                 end
                 
                 # Get optimizer configuration for this group
-                optimizer, opt, _ = _get_optimizer_for_group(g, optimizer_dict)
+                optimizer, opt, optname = _get_optimizer_for_group(g, optimizer_dict)
                 
                 # Find parameters belonging to this group
                 inds = findall(param_groups .== g)
@@ -243,8 +243,10 @@ function estimate_steps!(
                 # Optimize this parameter block
                 try
                     # without autodiff
-                    res = optimize(subobj, x0, optimizer, opt)
-                 
+                    res = optname == "MultiStartLBFGS" ?
+                        _multistart_optimize(subobj, x0, optimizer, opt) :
+                        optimize(subobj, x0, optimizer, opt)
+
                     p[inds] .= Optim.minimizer(res)
                 catch e
                     println("  ⚠️  Error optimizing group $g on iter $iter: $e")
@@ -256,8 +258,9 @@ function estimate_steps!(
                     break
                 end
 
-                # garbage collect 
-                GC.gc()
+                # (Removed forced GC.gc(): with the analytic score and preallocated
+                #  filter buffers each objective eval allocates ~99% less, so a manual
+                #  full GC every group step was pure latency. Automatic GC suffices.)
             end
             
             # Exit if error occurred
@@ -483,7 +486,8 @@ function _create_optimizer_dict(opts, optimizers, T; printing::Bool=true)
         
         return Dict(
             "1" => (optimizer1, opt1, "NelderMead"),
-            "2" => (optimizer2, opt2, "LBFGS"), #LBFGS
+            "2r" => (optimizer2, opt2, "MultiStartLBFGS"), # multi-start LBFGS (8 serial restarts)MultiStartLBFGS
+            "2" => (optimizer2, opt2, "LBFGS"),          # single-start LBFGS (previous "2")
             "3" => (optimizer3, opt3, "Adam"),
             "4" => (optimizer4, opt1, "NelderMead"),
             "5" => (optimizer3, opt5, "Adam-Long")
@@ -505,4 +509,30 @@ function _get_optimizer_for_group(group_id, optimizer_dict)
         # Default fallback
         return optimizer_dict["1"]
     end
+end
+
+"""
+    _multistart_optimize(subobj, x0, optimizer, opt; n_restarts=8, sigma=0.5)
+
+Multi-start LBFGS for a parameter block: restart 1 from the warm point `x0`,
+the rest from `x0 + sigma·randn` (unconstrained space). Returns the best Optim
+result. Serial; a failed restart is skipped. Used when a group's optimizer is
+labelled "MultiStartLBFGS" (dictionary key "2").
+"""
+function _multistart_optimize(subobj, x0, optimizer, opt; n_restarts::Int=8, sigma::Real=0.5)
+    best_res = optimize(subobj, copy(x0), optimizer, opt)
+    best_val = Optim.minimum(best_res)
+    for r in 2:n_restarts
+        xr = x0 .+ sigma .* randn(length(x0))
+        try
+            res = optimize(subobj, xr, optimizer, opt)
+            if Optim.minimum(res) < best_val
+                best_val = Optim.minimum(res)
+                best_res = res
+            end
+        catch
+            # skip a failed restart
+        end
+    end
+    return best_res
 end

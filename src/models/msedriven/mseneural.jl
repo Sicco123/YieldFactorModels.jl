@@ -21,7 +21,7 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real, F1, F2} <: Abstract
                                model_string::String = "MSEDNeural",
                                results_location::String = "results/",
                                scale_grad::Bool = false,
-                               forget_factor::T = T(0.9), transform_bool::Bool = true) where T<:Real
+                               forget_factor::T = T(0.98), transform_bool::Bool = true) where T<:Real
         
         specific_transformations = Function[]
         specific_untransformations = Function[]
@@ -113,7 +113,7 @@ function get_static_model_type(model::AbstractNeuralMSEDrivenModel)
     if model.transform_bool
         return "NNS"
     else 
-        return "NNS-Anchored"
+        return "NNS-Not-Anchored"
     end
 end
 
@@ -134,30 +134,46 @@ end
 
 
 
+# Hand-rolled forward of the fixed 1→3→1 tanh MLP (net_size = 3, no output bias),
+# writing the N outputs straight into `dest`. Mathematically identical to the Lux
+# Chain the model is built from, but allocation-free — Lux's per-call allocations
+# were a hot-loop cost (one call per net per time step). `g` is the 9-element
+# parameter view: g[1:3] = hidden weights, g[4:6] = hidden biases, g[7:9] = output
+# weights (matching shapeγ).
+@inline function _net3_forward!(dest, g, net_input)
+    @inbounds @simd for j in eachindex(dest)
+        xj = net_input[1, j]
+        dest[j] = g[7]*tanh(g[1]*xj + g[4]) +
+                  g[8]*tanh(g[2]*xj + g[5]) +
+                  g[9]*tanh(g[3]*xj + g[6])
+    end
+    return dest
+end
+
 @inline function update_factor_loadings!(
-    model::AbstractNeuralMSEDrivenModel, 
-    gamma::AbstractVector{T}, 
+    model::AbstractNeuralMSEDrivenModel,
+    gamma::AbstractVector{T},
     Z::AbstractMatrix{R}
 ) where {T <: Real, R <: Real}
-    
+
 
     # Pre-compute views to avoid repeated indexing
     z2 = @view Z[:, 2]
     z3 = @view Z[:, 3]
-    
+
     # Set first column to ones if needed (more robust check)
     if Z[1, 1] != one(T)
         Z[:, 1] .= one(T)
     end
-    
-    z2 .= model.net1(@view gamma[1:9])'
-    z3 .= model.net2(@view gamma[10:18])'
-    #println(typeof(gamma))
+
+    _net3_forward!(z2, @view(gamma[1:9]),  model.net_input)
+    _net3_forward!(z3, @view(gamma[10:18]), model.net_input)
+
     # Transform
     transform_net_1!(z2, model.net_input, Val(model.transform_bool))
     transform_net_2!(z3, model.net_input, Val(model.transform_bool))
 
 
-    
+
     return nothing
 end

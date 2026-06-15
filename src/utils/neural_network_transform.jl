@@ -40,7 +40,7 @@ end
         sum_sq = zero(T)
         @simd for i in firstindex(dest)+1 : lastindex(dest)-1
             # residual (before square)
-            r = dest[i] - (slope * inputs[1, i] - intercept)
+            r = dest[i] - (slope * inputs[1, i] + intercept)   # detrend vs endpoint line (matches AAjunk)
             r2 = r * r
             dest[i] = r2                 # ensure positivity
             sum_sq  = muladd(r2, r2, sum_sq)  # sum of squares of r^2  (as in your code)

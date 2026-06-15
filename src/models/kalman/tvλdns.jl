@@ -53,7 +53,7 @@ end
 function update_factor_loadings!(model::AbstractTVλDNSModel, gamma::AbstractVector{R}, Z::AbstractMatrix{R}) where {R<:Real}
     # Extract lambda parameter
     
-    model.lambda .= R(1e-2) .+ exp.(gamma)
+    model.lambda .= one(R) ./ (one(R) .+ exp.(.-gamma))   # logistic link (matches AAjunk/DNS)
 
     model.tau_maturities .= model.lambda .* model.base.maturities
     model.z_i .= exp.(-model.tau_maturities)

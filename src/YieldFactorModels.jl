@@ -39,6 +39,7 @@ module YieldFactorModels
     include("models/kalman/filter.jl")
     include("models/kalman/paramoperations.jl")
     include("models/filter.jl")
+    include("models/concentrate.jl")
     include("models/kalman/tvλdns.jl")
 
     # Utility files
@@ -176,11 +177,19 @@ module YieldFactorModels
             )
         else
             init_params, loss, params, ir = estimate!(
-                model, 
-                data[:, 1:in_sample_end], 
+                model,
+                data[:, 1:in_sample_end],
                 all_params;
                 printing = printing
             )
+        end
+        # Concentrate-out: persist the closed-form (delta, Phi) for the optimised
+        # neural params so the returned vector and downstream filtering/forecasting
+        # are complete. Covers in-sample AND every rolling-window re-estimation.
+        if CONCENTRATE[] && _can_concentrate(model)
+            set_params!(model, params)
+            _persist_concentrate!(model, data[:, 1:in_sample_end])
+            params = get_params(model)
         end
         return init_params, loss, params, ir
     end
@@ -234,8 +243,9 @@ module YieldFactorModels
         save_results_bool::Bool=true, 
         simulation::Bool=false, 
         reestimate::Bool=true, 
-        scratch_dir::String="", 
-        seed::Int=43
+        scratch_dir::String="",
+        seed::Int=43,
+        concentrate::Bool=true
     )
 
         if simulation
@@ -260,12 +270,36 @@ module YieldFactorModels
         N = length(maturities)  # Number of maturities
         M = 3                    # Number of factors
        
+        # Resolve numeric aliases (e.g. "-1") to canonical names (e.g. "RW")
+        # before building the results path, so results/init folders are named
+        # consistently regardless of how the model was invoked.
+        model_type = canonical_model_type(model_type)
         model, model_type = create_model(model_type, maturities, N, M, float_type, "$results_location$(model_type)/" )
  
         # ========================================================================
         # Load and set parameters
         # ========================================================================
         param_groups = get_param_groups(model, param_groups)
+
+        # Concentrate-out: solve (delta, Phi) in closed form each eval so the
+        # optimiser only varies the neural/score params. Only for the anchored
+        # neural model; otherwise a no-op. The (delta,Phi) block is marked "-1"
+        # (the existing skip group) so the block-coordinate optimiser ignores it.
+        use_concentrate = concentrate && _can_concentrate(model)
+        CONCENTRATE[] = use_concentrate
+        if use_concentrate
+            nlin = length(model.base.delta) + length(model.base.Phi)
+            n_total = length(get_params(model))
+            if isempty(param_groups)
+                # Force the grouped (non-autodiff) path and skip (delta,Phi):
+                # concentrate is incompatible with the autodiff LBFGS path.
+                param_groups = [fill("1", n_total - nlin)..., fill("-1", nlin)...]
+            else
+                param_groups[end-nlin+1:end] .= "-1"
+            end
+            println("Concentrate-out ON: optimising $(count(!=("-1"), param_groups)) params; (delta,Phi) solved in closed form.")
+        end
+
         all_params = load_initial_parameters!(model, model_type, float_type; simulation=simulation)
         set_params!(model, all_params[:, 1])
         
@@ -286,12 +320,14 @@ module YieldFactorModels
                 model, data, in_sample_end, all_params, param_groups, 
                 max_group_iters, group_tol; printing = true
             )
-        else  
+        else
             init_params = all_params[:, 1]
             params = all_params[:, 1]
             loss = 0.0
             ir = 0.0
         end
+        # (run_estimation! already persisted the closed-form (delta, Phi) when
+        #  concentrate is on, for both the in-sample fit and rolling windows.)
 
         # ========================================================================
         # Compute in-sample loss
@@ -331,12 +367,15 @@ module YieldFactorModels
         # Rolling window forecasts
         # ========================================================================
         if run_rolling
+            # Concentrate-out stays ON for rolling: param_groups already mark the
+            # (delta,Phi) block as "-1" (skipped), and each window's re-estimation
+            # solves them in closed form inside run_estimation!.
             println("Forecasting...")
             run_rolling_forecasts(
-                model, data, thread_id, in_sample_end, in_sample_start, forecast_horizon, 
-                all_params; 
-                window_type=window_type, 
-                param_groups=param_groups, 
+                model, data, thread_id, in_sample_end, in_sample_start, forecast_horizon,
+                all_params;
+                window_type=window_type,
+                param_groups=param_groups,
                 max_group_iters=max_group_iters, 
                 group_tol=group_tol, 
                 reestimate=reestimate

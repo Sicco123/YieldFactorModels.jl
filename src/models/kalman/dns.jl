@@ -52,8 +52,8 @@ function update_factor_loadings!(model::AbstractDNSModel, gamma, Z)
     # Extract lambda parameter
     R = eltype(gamma)
     
-    λ = R(1e-2) .+ exp.(gamma)
-  
+    λ = one(R) ./ (one(R) .+ exp.(.-gamma))   # logistic link (matches AAjunk/DNS)
+
     tau_maturities = λ .* model.base.maturities
     z_i = exp.(-tau_maturities)
 
