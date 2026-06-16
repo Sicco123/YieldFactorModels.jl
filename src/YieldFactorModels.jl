@@ -351,7 +351,7 @@ module YieldFactorModels
             results = predict(model, data[:, 1:end])
             save_results(model, results, loss, thread_id, "outofsample")
             
-            loss_array = get_loss_array(model, data[:, 1:end]; K = 1)
+            loss_array = get_loss_array(model, data[:, 1:end]; num_inits = 1)
             out_of_sample_loss_array = loss_array[in_sample_end+1:end]
 
             # print first sum of 10 percent of out-of-sample losses, 25%, 50% of the sample and then 75 percent and 100 percent

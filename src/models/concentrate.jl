@@ -34,24 +34,23 @@ function _concentrate_accumulate(model, data, num_inits::Int)
     base = model.base
     T = eltype(base.gamma)
     nobs = size(data, 2); N = base.N; M = base.M; nlin = M * (M + 1); nt = nobs - 1
-    gamma0 = copy(base.gamma)
-    gamma_hist = Matrix{T}(undef, length(base.gamma), nobs)
-    lo = max(1, div(nobs, 5)); hi = max(lo, div(nobs, 2))
 
     G = zeros(T, nlin, nlin); c = zeros(T, nlin); sy = zero(T)
     X = zeros(T, N, nlin); Gt = zeros(T, nlin, nlin); ct = zeros(T, nlin); bbuf = zeros(T, M)
     cache = initialize_filter(model)
-    for init in 1:num_inits
-        if init == 1
-            base.gamma .= gamma0
-        else
-            ridx = rand(Random.MersenneTwister(42 + init), lo:hi)
-            @views base.gamma .= gamma_hist[:, ridx]
+
+    # Catch-point re-seeding (mirrors get_loss): capture params mid-run, restore via
+    # set_params! on later runs, instead of random gamma_hist indices.
+    catched_params = similar(get_params(model))
+
+    for init in 0:num_inits-1
+        catch_point = Int(floor(nobs * ((0.25) + 0.75 * (init) / num_inits)))
+        if init > 1
+            set_params!(model, catched_params)
         end
         update_factor_loadings!(model, base.gamma, base.Z)
         for t in 1:nobs
             y = view(data, :, t)
-            @views gamma_hist[:, t] .= base.gamma
             get_β_OLS!(base.beta, base.Z, y, cache.ZtZ, cache.Zty)   # beta_t|t (pre)
             grad = get_grad_gamma!(cache, model, base.beta, base.gamma, base.Z, y)
             update_gamma_with_grad!(model, grad, Val(base.scale_grad))
@@ -69,6 +68,9 @@ function _concentrate_accumulate(model, data, num_inits::Int)
                 mul!(ct, X', yt); c .+= ct
                 sy += dot(yt, yt)
             end
+            if t == catch_point
+                catched_params = copy(get_params(model))
+            end
         end
     end
     return G, c, sy
@@ -81,6 +83,10 @@ function get_loss_concentrated(model, data::Matrix{T}; num_inits::Int=3) where T
     base = model.base
     nobs = size(data, 2)
     G, c, sy = _concentrate_accumulate(model, data, num_inits)
+    # Explosive neural params can blow Z/β (hence G, c) to Inf/NaN; mirror the
+    # filter's get_loss convention and return -Inf so the optimiser rejects the
+    # step instead of the LU solve throwing and killing the run.
+    (all(isfinite, G) && all(isfinite, c) && isfinite(sy)) || return -T(Inf)
     theta = _concentrate_theta(G, c, T)
     rss = sy - 2 * dot(theta, c) + dot(theta, G * theta)             # Σ‖y - Xθ‖², closed form
     return -rss / base.N / nobs / num_inits
@@ -138,6 +144,8 @@ end
 function get_loss_concentrated_static(model, data::Matrix{T}) where T
     base = model.base; nobs = size(data, 2)
     G, c, sy = _concentrate_accumulate_static(model, data)
+    # See get_loss_concentrated: guard non-finite normal equations.
+    (all(isfinite, G) && all(isfinite, c) && isfinite(sy)) || return -T(Inf)
     theta = _concentrate_theta(G, c, T)
     rss = sy - 2 * dot(theta, c) + dot(theta, G * theta)
     return -rss / base.N / nobs
@@ -160,9 +168,9 @@ function set_concentrated_params_static!(model, data)
 end
 
 # Static neural get_loss: concentrate when toggled, else the generic path.
-function get_loss(model::AbstractStaticNeuralModel, data::Matrix{T}; K::Int=1) where T<:Real
+function get_loss(model::AbstractStaticNeuralModel, data::Matrix{T}; num_inits::Int=_default_num_inits(model)) where T<:Real
     CONCENTRATE[] && return get_loss_concentrated_static(model, data)
-    return invoke(get_loss, Tuple{AbstractYieldFactorModel, Matrix{T}}, model, data; K=K)
+    return invoke(get_loss, Tuple{AbstractYieldFactorModel, Matrix{T}}, model, data; num_inits=num_inits)
 end
 
 # Which models support concentrate-out, and how to persist (delta, Phi).

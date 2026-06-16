@@ -78,6 +78,28 @@ function _release_task_lock(lockdir::AbstractString)
     end
 end
 
+# Reclaim orphaned locks: a lock held with no shard and older than `stale_seconds`
+# belongs to a worker that died mid-window (hard kill / OOM / node loss), so its
+# try/finally never released it. Removing it lets the next sweep recompute that
+# window; actual acquisition stays the atomic mkdir in _acquire_task_lock, so two
+# workers can't both grab a reclaimed window. `stale_seconds` is set well above
+# any real window time, so a slow-but-alive worker is never preempted.
+function _reclaim_stale_locks(lockroot, window_type, forecast_db_base, tasks; stale_seconds::Real=600)
+    lkdir = joinpath(lockroot, window_type)
+    isdir(lkdir) || return 0
+    n = 0; now = time()
+    for t in tasks
+        lock = joinpath(lkdir, "task_$(t).lock")
+        (isdir(lock) && !isfile(_forecast_path(forecast_db_base, t))) || continue
+        try
+            now - mtime(lock) > stale_seconds && (rm(lock; recursive=true, force=true); n += 1)
+        catch
+            # best-effort; ignore
+        end
+    end
+    return n
+end
+
 function run_forecast_window_database(model::AbstractYieldFactorModel, data::AbstractMatrix, thread_Id::String,
     in_sample_end::Int, in_sample_start::Int, out_sample_end::Int, forecast_horizon::Int, window_type::String,
      init_params::AbstractMatrix;
@@ -125,6 +147,13 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
     t = 0.0
 
     for task_id in tasks
+        # Another worker may have finished & merged this experiment while we were
+        # mid-sweep (the merge deletes shards). Re-check here so we stop instead of
+        # recomputing windows whose answers are already in the merged db.
+        if isfile(merged_path)
+            println("Merged db appeared for $(model.base.model_string); stopping sweep.")
+            break
+        end
         shard_path = _forecast_path(forecast_db_base, task_id)
         if isfile(shard_path)
             continue
@@ -217,6 +246,8 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
             _release_task_lock(lockdir)
         end
     else
+        nrec = _reclaim_stale_locks(lockroot, window_type, forecast_db_base, tasks)
+        nrec > 0 && println("Reclaimed $nrec stale lock(s) for $(model.base.model_string).")
         println("Not all shards available for $(model.base.model_string). Skipping merge for now.")
     end
 

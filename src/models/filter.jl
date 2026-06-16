@@ -353,108 +353,104 @@ function get_grad_gamma_alt!(cache::GradientCache, m, beta, gamma, Z_proto, y)
     return DiffResults.gradient(res)
 end
 
-function get_loss(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=1 ) where T<:Real
+function get_loss(model::AbstractYieldFactorModel, data::Matrix{T}; num_inits::Int=_default_num_inits(model) ) where T<:Real
     base = model.base
     nobs = size(data, 2)
     cache = initialize_filter(model)
 
     mse = T(0.0)
-    
+
     catched_params = similar(get_params(model))
     pred = similar(data[:,1])
     v = similar(data[:,1])
 
-    for k in 0:K-1
-        catch_point = Int(floor(nobs*((0.25) + 0.75*(k)/K)))
-        if k > 1
-            set_params!(model, catched_params) 
-        end 
+    for k in 0:num_inits-1
+        catch_point = Int(floor(nobs*((0.25) + 0.75*(k)/num_inits)))
+        if k > 0
+            set_params!(model, catched_params)
+        end
         for t in 1:nobs-1
             @views pred .= filter(model, data[:, t], cache)
             @views v .= data[:, t+1] .- pred
 
-           
+
             mse -= dot(v, v)
 
             if isinf(mse) || isnan(mse)
                 return -Inf
             end
-        
+
             if t == catch_point
                 catched_params = copy(get_params(model))
             end
         end
     end
 
-    return mse/base.N/nobs/K
+    return mse/base.N/nobs/num_inits
 end
 
 # Multi-initialization one-step-ahead loss for score-driven models.
+_default_num_inits(::AbstractYieldFactorModel) = 1
 _default_num_inits(::AbstractMSEDrivenModel) = 3
 _default_num_inits(::AbstractλMSEDrivenModel) = 1
 
-function get_loss(model::AbstractMSEDrivenModel, data::Matrix{T}; K::Int=1, num_inits::Int=_default_num_inits(model)) where T<:Real
+function get_loss(model::AbstractMSEDrivenModel, data::Matrix{T}; num_inits::Int=_default_num_inits(model)) where T<:Real
     # Concentrated path: solve (delta, Phi) in closed form (neural anchored model
     # only). Additive — only taken when run(...; concentrate=true) set CONCENTRATE[].
     if CONCENTRATE[] && model isa AbstractNeuralMSEDrivenModel && model.transform_bool
         return get_loss_concentrated(model, data; num_inits=num_inits)
     end
+
+
     base = model.base
     nobs = size(data, 2)
 
-    # Score state implied by the current parameters (set in set_params!).
-    gamma0 = copy(base.gamma)
-    # Score-state trajectory of the most recent run; re-seed source for runs > 1.
-    gamma_hist = Matrix{eltype(base.gamma)}(undef, length(base.gamma), nobs)
-
-    # Re-seed period range (matches DNS: nobs/5 .. nobs/2), guarded for short samples.
-    lo = max(1, div(nobs, 5))
-    hi = max(lo, div(nobs, 2))
+    cache = initialize_filter(model)
 
     pred = similar(data[:, 1])
     v    = similar(data[:, 1])
 
-    mse = T(0.0)
-    for init in 1:num_inits
-        # (Re)initialize the score state, then refresh loadings and the filter cache.
-        if init == 1
-            base.gamma .= gamma0
-        else
-            ridx = rand(Random.MersenneTwister(42 + init), lo:hi)
-            @views base.gamma .= gamma_hist[:, ridx]
-        end
-        update_factor_loadings!(model, base.gamma, base.Z)
-        cache = initialize_filter(model)
+    # Catch-point re-seeding (mirrors the generic get_loss): capture params mid-run
+    # and re-seed later runs via set_params!, instead of random gamma_hist indices.
+    catched_params = similar(get_params(model))
 
+    mse = T(0.0)
+    for init in 0:num_inits-1
+        catch_point = Int(floor(nobs*((0.25) + 0.75*(init)/num_inits)))
+        if init > 0
+            set_params!(model, catched_params)
+        end
         for t in 1:nobs-1
-            @views gamma_hist[:, t] .= base.gamma     # score state used to predict t+1
             @views pred .= filter(model, data[:, t], cache)
             @views v .= data[:, t+1] .- pred
             mse -= dot(v, v)
             if isinf(mse) || isnan(mse)
                 return -Inf
             end
+            if t == catch_point
+                catched_params = copy(get_params(model))
+            end
         end
     end
 
-    return mse / base.N / nobs / num_inits / K
+    return mse / base.N / nobs / num_inits
 end
 
-function get_loss_array(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=1 ) where T<:Real
+function get_loss_array(model::AbstractYieldFactorModel, data::Matrix{T}; num_inits::Int=_default_num_inits(model) ) where T<:Real
     base = model.base
     nobs = size(data, 2)
     cache = initialize_filter(model)
 
     mse = Vector{T}(undef, nobs -1)
     fill!(mse, 0.0)
-    
+
     catched_params = similar(get_params(model))
     pred = similar(data[:,1])
     v = similar(data[:,1])
 
-    @inbounds for k in 0:K-1
-        catch_point = Int(floor(nobs*((0.25) + 0.75*(k)/K)))
-        if k > 1
+    @inbounds for k in 0:num_inits-1
+        catch_point = Int(floor(nobs*((0.25) + 0.75*(k)/num_inits)))
+        if k > 0
             set_params!(model, catched_params) 
         end 
         for t in 1:nobs-1
@@ -474,31 +470,49 @@ function get_loss_array(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int
     end
 
     # In-place division to avoid allocation
-    @. mse = mse / base.N / K
+    @. mse = mse / base.N / num_inits
     return mse
 end
 
-
-function predict(model::AbstractYieldFactorModel, data::Matrix{T}; K::Int=3) where T<:Real
+#_default_num_inits(model)
+function predict(model::AbstractYieldFactorModel, data::Matrix{T}; num_inits::Int=_default_num_inits(model)) where T<:Real
     base = model.base
     nobs = size(data, 2)
 
     cache = initialize_filter(model)
 
-    preds = Matrix{T}(undef, size(data))
-    factors = Matrix{T}(undef, model.base.M, nobs)
-    states = Matrix{T}(undef, model.base.L, nobs)
-    factor_loadings_1 = Matrix{T}(undef, model.base.N,  nobs)
-    factor_loadings_2 = Matrix{T}(undef, model.base.N,  nobs)
+    # preds are averaged over the num_inits catch-point runs; factors/states/loadings
+    # keep the last recorded run (k = num_inits-1).
+    preds = zeros(T, size(data))
+    factors = Matrix{T}(undef, base.M, nobs)
+    states = Matrix{T}(undef, base.L, nobs)
+    factor_loadings_1 = Matrix{T}(undef, base.N, nobs)
+    factor_loadings_2 = Matrix{T}(undef, base.N, nobs)
 
-    for t in 1:nobs
-        pred = filter(model, data[:, t], cache)
-        preds[:, t] = pred
-        factors[:, t] = base.beta
-        states[:, t] = base.gamma
-        factor_loadings_1[:, t] = copy(base.Z[:, 2])
-        factor_loadings_2[:, t] = copy(base.Z[:, 3])
+    # Catch-point logic mirrors get_loss: capture params mid-run and re-seed later runs.
+    catched_params = similar(get_params(model))
+
+    for k in 0:num_inits-1
+        catch_point = Int(floor(nobs * ((0.25) + 0.75 * (k) / num_inits)))
+        if k > 0
+            set_params!(model, catched_params)
+        end
+        for t in 1:nobs
+            pred = filter(model, data[:, t], cache)
+            @views preds[:, t] .+= pred
+            @views factors[:, t] .= base.beta
+            @views states[:, t] .= base.gamma
+            @views factor_loadings_1[:, t] .= base.Z[:, 2]
+            @views factor_loadings_2[:, t] .= base.Z[:, 3]
+
+            if t == catch_point
+                catched_params = copy(get_params(model))
+            end
+        end
     end
+
+    # Average predictions over the num_inits runs.
+    preds ./= num_inits
 
     return (preds=preds, factors=factors, states=states, factor_loadings_1=factor_loadings_1, factor_loadings_2=factor_loadings_2)
 end

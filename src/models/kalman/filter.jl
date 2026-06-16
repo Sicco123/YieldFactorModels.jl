@@ -208,18 +208,18 @@ function get_loss(model::AbstractKalmanModel, data::Matrix{T}) where T<:Real
     return loglik
 end
 
-function get_loss_array(model::AbstractKalmanModel, data::Matrix{T}; K::Int=1 ) where T<:Real
+function get_loss_array(model::AbstractKalmanModel, data::Matrix{T}; num_inits::Int=_default_num_inits(model) ) where T<:Real
     base = model.base
     nobs = size(data, 2)
     cache = initialize_filter(model)
 
     mse = Vector{T}(undef, nobs -1)
     fill!(mse, 0.0)
-    
+
     catched_params = similar(get_params(model))
 
-    @inbounds for k in 0:K-1
-        catch_point = Int(floor(nobs*((0.25) + 0.75*(k)/K)))
+    @inbounds for k in 0:num_inits-1
+        catch_point = Int(floor(nobs*((0.25) + 0.75*(k)/num_inits)))
         if k > 1
             set_params!(model, catched_params) 
         end 
@@ -242,12 +242,12 @@ function get_loss_array(model::AbstractKalmanModel, data::Matrix{T}; K::Int=1 ) 
     end
 
     # In-place division to avoid allocation
-    @. mse = mse / base.N / K
+    @. mse = mse / base.N / num_inits
     return mse
 end
 
 
-function predict(model::AbstractKalmanModel, data::Matrix{T}; K::Int=3) where T<:Real
+function predict(model::AbstractKalmanModel, data::Matrix{T}) where T<:Real
     base = model.base
     nobs = size(data, 2)
 
