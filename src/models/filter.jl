@@ -5,13 +5,24 @@ struct GradientCache{C,T}
     v_any::Base.RefValue{Any}       # will hold Vector{<:Real or <:Dual}
     ZtZ::Matrix{T}                  # Pre-allocated for Z'Z
     Zty::Vector{T}                  # Pre-allocated for Z'y
+    pred::Vector{T}                 # N: one-step prediction buffer (Z*beta)
+    tmp::Vector{T}                  # M: transition buffer (Phi*beta)
+    H::Matrix{T}                    # 3 × 2N: analytic-score hidden activations (h1 | h2)
+    S::Matrix{T}                    # N × 10: analytic-score column scratch
+    grad::Vector{T}                 # length-L analytic-score output buffer
 end
 
-function GradientCache(gamma::AbstractVector{T}, M::Int) where T
+function GradientCache(gamma::AbstractVector{T}, M::Int, N::Int) where T
     cfg = ForwardDiff.GradientConfig(nothing, gamma, ForwardDiff.Chunk{length(gamma)}())
     ZtZ = Matrix{T}(undef, M, M)
     Zty = Vector{T}(undef, M)
-    return GradientCache{typeof(cfg),T}(cfg, Ref{Any}(nothing), Ref{Any}(nothing), ZtZ, Zty)
+    pred = Vector{T}(undef, N)
+    tmp = Vector{T}(undef, M)
+    H = Matrix{T}(undef, 3, 2N)
+    S = Matrix{T}(undef, N, 10)
+    grad = Vector{T}(undef, length(gamma))
+    return GradientCache{typeof(cfg),T}(cfg, Ref{Any}(nothing), Ref{Any}(nothing),
+                                        ZtZ, Zty, pred, tmp, H, S, grad)
 end
 
 
@@ -22,7 +33,7 @@ function initialize_filter(model::AbstractYieldFactorModel)
        base.grad_EWMA .= zeros(eltype(base.gamma), length(base.gamma))
        base.grad_EWMA_count .= [0]
     end
-    return GradientCache(base.gamma, base.M)
+    return GradientCache(base.gamma, base.M, base.N)
 end
 
 
@@ -49,14 +60,46 @@ end
     return nothing
 end
 
+"""
+    clamp_slope_loading!(model, Z)
+
+Hold the neural slope loading inside [0, 1] on prediction steps. No-op for every other
+family, and never applied on an observed step.
+
+`transform_net_1!` scales that loading by the gap between the network's output at the
+short end and at the long end, then squares the ratio. On a prediction step there is no
+observation to re-anchor gamma, so the network drifts, the curve flattens, and that gap
+shrinks — quadratically inflating the loading. Thread 7, window 460 reached 79.6 at the
+two-year maturity on the twelfth step and forecast a 73% yield; the factors were normal
+throughout, so the whole error came through this one channel.
+
+The bound is not arbitrary: across 3000 forecast steps the loading's 99th percentile is
+exactly 1.000 and only 0.1% (1SD-NNS) to 0.5% (1SSD-NNS) of entries exceed it, so the
+clamp binds on the runaway cases and leaves ordinary forecasts alone. It is deliberately
+absent from the observed branch: during estimation every step has data to re-anchor the
+gap, and clamping there would distort the objective the optimizer is minimising.
+"""
+clamp_slope_loading!(::AbstractMSEDrivenModel, ::AbstractMatrix) = nothing
+
+function clamp_slope_loading!(::AbstractNeuralMSEDrivenModel, Z::AbstractMatrix{R}) where {R<:Real}
+    lo, hi = zero(R), one(R)
+    @inbounds @simd for i in axes(Z, 1)
+        Z[i, 2] = clamp(Z[i, 2], lo, hi)
+    end
+    return nothing
+end
+
 function filter(m::AbstractMSEDrivenModel, y::AbstractVector{T}, cache) where T<:Real
     if isnan(y[1])
         if !isempty(m.base.B)
             m.base.gamma .= m.base.nu .+ m.base.B .* m.base.gamma
             update_factor_loadings!(m, m.base.gamma, m.base.Z)
         end
-        m.base.beta .= m.base.mu  .+ m.base.Phi * m.base.beta
-        return m.base.Z * m.base.beta
+        clamp_slope_loading!(m, m.base.Z)
+        mul!(cache.tmp, m.base.Phi, m.base.beta)
+        m.base.beta .= m.base.mu .+ cache.tmp
+        mul!(cache.pred, m.base.Z, m.base.beta)
+        return cache.pred
     end
     # 1) Get beta OLS
     try
@@ -80,14 +123,15 @@ function filter(m::AbstractMSEDrivenModel, y::AbstractVector{T}, cache) where T<
         return -Inf
     end
 
-    # 4) Predictions 
+    # 4) Predictions
     if !isempty(m.base.B)
         m.base.gamma .= m.base.nu .+ m.base.B .* m.base.gamma
         update_factor_loadings!(m, m.base.gamma, m.base.Z)
     end
-    m.base.beta .= m.base.mu  .+ m.base.Phi * m.base.beta
-
-    return m.base.Z * m.base.beta
+    mul!(cache.tmp, m.base.Phi, m.base.beta)
+    m.base.beta .= m.base.mu .+ cache.tmp
+    mul!(cache.pred, m.base.Z, m.base.beta)
+    return cache.pred
 end
 
 function filter(m::AbstractStaticModel, y::AbstractVector{T}, cache) where T<:Real
@@ -165,9 +209,10 @@ function _buffers!(cache::GradientCache, Z_proto::AbstractMatrix, y_proto::Abstr
     return Zt, vt
 end
 
-function get_grad_gamma!(cache::GradientCache, m, beta, gamma, Z_proto, y)
+# Generic score: ∂(-‖y - Z(γ)β‖²)/∂γ via ForwardDiff (fallback for any model).
+function _grad_gamma_ad!(cache::GradientCache, m, beta, gamma, Z_proto, y)
     cfg = cache.cfg
-    
+
     # scalar loss (log-likelihood) over gamma, reusing scratch
     function llf(p)
         Z_temp, v = _buffers!(cache, ForwardDiff.value.(Z_proto), y, p)
@@ -181,6 +226,143 @@ function get_grad_gamma!(cache::GradientCache, m, beta, gamma, Z_proto, y)
     res = DiffResults.GradientResult(gamma)
     ForwardDiff.gradient!(res, llf, gamma, cfg)
     return DiffResults.gradient(res)
+end
+
+get_grad_gamma!(cache::GradientCache, m, beta, gamma, Z_proto, y) =
+    _grad_gamma_ad!(cache, m, beta, gamma, Z_proto, y)
+
+# Toggle for the closed-form neural score. ON by default; set to false (e.g. via
+# run(...; analytic_score=false)) to fall back to the ForwardDiff path
+# (_grad_gamma_ad!). Kept as a Ref so it can be flipped at runtime without
+# rebuilding the model.
+const ANALYTIC_SCORE = Ref(true)
+
+# Neural models: use the closed-form score for the anchored loadings
+# (transform_bool = true) only when ANALYTIC_SCORE[] is on; otherwise fall back
+# to ForwardDiff.
+function get_grad_gamma!(cache::GradientCache, m::AbstractNeuralMSEDrivenModel, beta, gamma, Z_proto, y)
+    return (ANALYTIC_SCORE[] && m.transform_bool) ?
+        _analytic_score_neural!(cache, m, beta, gamma, y) :
+        _grad_gamma_ad!(cache, m, beta, gamma, Z_proto, y)
+end
+
+
+function _analytic_score_neural!(cache::GradientCache, m, beta, gamma, y)
+    base = m.base
+    N = base.N
+    T = eltype(gamma)
+    x = m.net_input                       # 1 × N maturities (fixed)
+    b1 = beta[1]; b2 = beta[2]; b3 = beta[3]
+    ε = T(1e-7)
+    scale = T(0.9610)
+
+    # preallocated scratch (cache.H 3×2N, cache.S N×10, cache.grad length-L)
+    h1 = view(cache.H, :, 1:N);      h2 = view(cache.H, :, N+1:2N)
+    r2 = view(cache.S, :, 1);  z2 = view(cache.S, :, 2);  t2 = view(cache.S, :, 3)
+    r3 = view(cache.S, :, 4);  z3 = view(cache.S, :, 5);  p  = view(cache.S, :, 6)
+    resid = view(cache.S, :, 7); v = view(cache.S, :, 8)
+    gr2 = view(cache.S, :, 9);  gr3 = view(cache.S, :, 10)
+    grad = cache.grad
+
+    # ---------------- net 1 forward (γ[1:9]) ----------------
+    @inbounds for j in 1:N
+        xj = x[1, j]; s1 = zero(T)
+        for k in 1:3
+            hk = tanh(gamma[k]*xj + gamma[3+k]); h1[k, j] = hk
+            s1 += gamma[6+k]*hk
+        end
+        r2[j] = s1
+    end
+    # transform_net_1! (Val{true}): z2[i]=((r2[i]-r2[N-1])·s)² on 2:N-2; ends fixed
+    raw_last1 = r2[N-1]
+    s = inv(r2[1] - r2[N-1] + ε)
+    @inbounds for i in 2:N-2
+        ti = (r2[i] - raw_last1)*s; t2[i] = ti; z2[i] = ti*ti
+    end
+    z2[1] = one(T); z2[N-1] = zero(T); z2[N] = zero(T)
+
+    # ---------------- net 2 forward (γ[10:18]) ----------------
+    @inbounds for j in 1:N
+        xj = x[1, j]; s1 = zero(T)
+        for k in 1:3
+            hk = tanh(gamma[9+k]*xj + gamma[12+k]); h2[k, j] = hk
+            s1 += gamma[15+k]*hk
+        end
+        r3[j] = s1
+    end
+    # transform_net_2! (Val{true}): detrend vs endpoint line (`- intercept` here),
+    # square, normalise.
+    x1 = x[1, 1]; xN = x[1, N]; invdx = inv(xN - x1)
+    slope = (r3[N] - r3[1])*invdx
+    intercept = r3[1] - slope*x1
+    sum_sq = zero(T)
+    @inbounds for i in 2:N-1
+        ri = r3[i] - (slope*x[1, i] - intercept); resid[i] = ri   # MINUS intercept
+        pi = ri*ri; p[i] = pi; sum_sq += pi*pi
+    end
+    sqrtS = sqrt(sum_sq)
+    denom = sqrtS/scale + ε
+    inv_denom = inv(denom)
+    z3[1] = zero(T); z3[N] = zero(T)
+    @inbounds for i in 2:N-1
+        z3[i] = p[i]*inv_denom
+    end
+
+    # ---------------- residual (seeds are gz2=2β₂v, gz3=2β₃v, applied inline) ----
+    @inbounds for j in 1:N
+        v[j] = y[j] - (b1 + b2*z2[j] + b3*z3[j])
+        gr2[j] = zero(T); gr3[j] = zero(T)       # zero accumulators (buffers reused)
+    end
+
+    # ---------------- transform 1 backward → gr2 ----------------
+    @inbounds for i in 2:N-2
+        ti = t2[i]; gi = 2*b2*v[i]
+        gr2[i]   += gi*(2*ti*s)
+        gr2[1]   += gi*(-2*ti*ti*s)
+        gr2[N-1] += gi*(2*ti*s*(ti - 1))
+    end
+    # net 1 backward → grad[1:9]
+    @inbounds for k in 1:3
+        gW2 = zero(T); gW1 = zero(T); gb = zero(T); W2k = gamma[6+k]
+        for j in 1:N
+            hkj = h1[k, j]; gj = gr2[j]
+            gW2 += gj*hkj
+            d = gj*W2k*(1 - hkj*hkj)
+            gb += d; gW1 += d*x[1, j]
+        end
+        grad[k] = gW1; grad[3+k] = gb; grad[6+k] = gW2
+    end
+
+    # ---------------- transform 2 backward → gr3 ----------------
+    # residual here is r_k = r3[k] + r3[1] - slope·(x_k + x1), so
+    # ∂r_k/∂r3[k]=1, ∂r_k/∂r3[1]=1 + invdx·(x_k+x1), ∂r_k/∂r3[N]=-invdx·(x_k+x1).
+    A = zero(T)
+    @inbounds for i in 2:N-1
+        A += (2*b3*v[i])*p[i]
+    end
+    secondc = denom*denom*scale*sqrtS
+    inv_secondc = secondc > 0 ? inv(secondc) : zero(T)
+    @inbounds for k in 2:N-1
+        gp = (2*b3*v[k])*inv_denom - p[k]*A*inv_secondc
+        gresid = gp*2*resid[k]
+        wk = (x[1, k] + x1)*invdx
+        gr3[k] += gresid
+        gr3[1] += gresid*(1 + wk)
+        gr3[N] += gresid*(-wk)
+    end
+    # net 2 backward → grad[10:18]
+    @inbounds for k in 1:3
+        gW2 = zero(T); gW1 = zero(T); gb = zero(T); W2k = gamma[15+k]
+        for j in 1:N
+            hkj = h2[k, j]; gj = gr3[j]
+            gW2 += gj*hkj
+            d = gj*W2k*(1 - hkj*hkj)
+            gb += d; gW1 += d*x[1, j]
+        end
+        grad[9+k] = gW1; grad[12+k] = gb; grad[15+k] = gW2
+    end
+
+    return grad
 end
 
 function get_grad_gamma_alt!(cache::GradientCache, m, beta, gamma, Z_proto, y)

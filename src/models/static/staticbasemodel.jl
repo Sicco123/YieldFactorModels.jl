@@ -59,7 +59,7 @@ struct StaticBaseModel{Fl<:Real,Fβ<:Real,Fγ<:Real} <: AbstractYieldFactorModel
             from_11_to_R
         ]
 
-        init_folder    = "YieldFactorModels.jl/initializations/$(model_string)/"
+        init_folder    = "YieldFactorModels.jl/initializations/$(base_model_name(model_string))/"
         results_folder = results_location
 
         return new{Fl,Fl,Fl}(maturities, N, M, L, Z, beta, Phi, delta, mu, gamma,
@@ -107,6 +107,8 @@ function get_param_groups(model::AbstractStaticModel, param_groups::Vector{Strin
         return param_groups
     else
         println("Default param groups assigned.")
-        return vcat(fill("1", length_total_params - base.M*(base.M +1)), fill("2", base.M*(base.M +1)))
+        return pin_diagonal_groups!(model,
+            vcat(fill("1", length_total_params - base.M*(base.M +1)), fill("2", base.M*(base.M +1))))
     end
 end
+

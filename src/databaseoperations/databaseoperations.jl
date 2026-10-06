@@ -1,16 +1,47 @@
+"""
+    _open_db(path; busy_ms = 30_000)
+
+Open a forecast database with a busy timeout. A bare `SQLite.DB` has a zero timeout,
+so it raises `SQLiteException("database is locked")` the moment another process holds
+the lock rather than waiting for it — which is what killed 7 of 24 workers reading a
+static model's merged database while it was being written. With a timeout SQLite
+retries internally for `busy_ms` and only then gives up, so the readers wait out a
+merge instead of dying on it.
+
+Writers set this pragma themselves and always did; the readers are what was missing.
+Journal mode is deliberately NOT set here: it is a persistent property of the file that
+`_init_forecast_db` negotiates (falling back to DELETE where WAL is unavailable, as on
+this cluster's shared filesystem), and a reader must not fight that.
+"""
+function _open_db(path::AbstractString; busy_ms::Int = 30_000)
+    db = SQLite.DB(path)
+    DBInterface.execute(db, "PRAGMA busy_timeout=$(busy_ms);")
+    return db
+end
+
 function read_static_params_from_db(model::AbstractYieldFactorModel, task_id::Int, all_params::AbstractMatrix; window_type::AbstractString="expanding")
     return all_params
 end
 
+"""
+A score-driven model normally starts each window from its static counterpart's fit for
+that window. `run(...; static_seed = false)` turns that off and leaves it on whatever
+`load_initial_parameters!` produced -- the cross-validated init file, when one exists for
+the thread. Same Ref pattern as `ANALYTIC_SCORE`, and it gates both seeding paths: this
+one and `load_static_parameters!` in run().
+"""
+const STATIC_SEED = Ref(true)
+
 function read_static_params_from_db(model::AbstractMSEDrivenModel, task_id::Int, all_params::AbstractMatrix ; window_type::AbstractString="expanding"   )
-    static_model_name = get_static_model_type(model)
+    STATIC_SEED[] || return all_params
+    static_model_name = static_counterpart(model)
     # get parent directory of model.base.results_folder 
     results_dir = dirname(dirname(model.base.results_folder))
     static_db_folder = string(results_dir, "/$static_model_name/db/")
 
     # from forecasts_${window_type}_merged.sqlite3 get the params 
     forecast_db_path = string(static_db_folder, "forecasts_", window_type, "_merged.sqlite3")
-    db = SQLite.DB(forecast_db_path)
+    db = _open_db(forecast_db_path)
     rows = DBInterface.execute(db, "SELECT params FROM forecasts WHERE task_id = ?;", (task_id,))
 
    
@@ -47,7 +78,7 @@ function read_params_from_db(model::AbstractYieldFactorModel, task_id::Int, all_
         return all_params
     end
 
-    db = SQLite.DB(forecast_db_path)
+    db = _open_db(forecast_db_path)
     rows = DBInterface.execute(db, "SELECT params FROM forecasts WHERE task_id = ?;", (task_id,))
 
    
@@ -75,11 +106,10 @@ function init_task_database(db_path::String, a::Int, b::Int; max_attempts::Int=5
     for i in 1:max_attempts
         try 
             if i == 1
-                db = SQLite.DB(db_path)
+                db = _open_db(db_path)
                 DBInterface.execute(db, "PRAGMA journal_mode=WAL;")
                 DBInterface.execute(db, "PRAGMA synchronous=NORMAL;")
                 DBInterface.execute(db, "PRAGMA temp_store=MEMORY;")
-                DBInterface.execute(db, "PRAGMA busy_timeout=10000;")
                 DBInterface.execute(db, "CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY, state INTEGER NOT NULL);")
                 DBInterface.execute(db, """
                     WITH RECURSIVE seq(x) AS (
@@ -93,7 +123,7 @@ function init_task_database(db_path::String, a::Int, b::Int; max_attempts::Int=5
                 SQLite.close(db)
             else
                 # try to read task with id a
-                db = SQLite.DB(db_path)
+                db = _open_db(db_path)
                 DBInterface.execute(db, "SELECT state FROM tasks WHERE id = ?;", (a,))
                 SQLite.close(db)
             end
@@ -104,7 +134,7 @@ function init_task_database(db_path::String, a::Int, b::Int; max_attempts::Int=5
             sleep(5.0)  # exponential backoff
         end
     end
-    db = SQLite.DB(db_path)
+    db = _open_db(db_path)
     return db
 end
 
@@ -126,10 +156,9 @@ function init_proc_counter_db(db_path::String; max_attempts::Int=5)
     for i in 1:max_attempts
         try
             if i == 1
-                db = SQLite.DB(db_path)
+                db = _open_db(db_path)
                 DBInterface.execute(db, "PRAGMA journal_mode=WAL;")
                 DBInterface.execute(db, "PRAGMA synchronous=NORMAL;")
-                DBInterface.execute(db, "PRAGMA busy_timeout=10000;")
                 DBInterface.execute(db, "PRAGMA temp_store=MEMORY;")
                 DBInterface.execute(db, """
                     CREATE TABLE IF NOT EXISTS proc_counter (
@@ -144,7 +173,7 @@ function init_proc_counter_db(db_path::String; max_attempts::Int=5)
                 SQLite.close(db)
             else
                 # try to read proc_counter
-                db = SQLite.DB(db_path)
+                db = _open_db(db_path)
                 DBInterface.execute(db, "SELECT n FROM proc_counter WHERE id = 1;")
                 SQLite.close(db)
             end
@@ -155,7 +184,7 @@ function init_proc_counter_db(db_path::String; max_attempts::Int=5)
             sleep(5.0)  # exponential backoff
         end
     end
-    db = SQLite.DB(db_path)
+    db = _open_db(db_path)
 
     return db
 end
@@ -208,9 +237,8 @@ function init_forecast_db(path::AbstractString)
     # Only one thread can initialize this DB at a time
     lock(_DB_INIT_LOCKS[path]) do
         newfile = !isfile(path)
-        db = SQLite.DB(path)
+        db = _open_db(path)
         
-        DBInterface.execute(db, "PRAGMA busy_timeout=10000;")
         DBInterface.execute(db, "PRAGMA temp_store=MEMORY;")
         
         if newfile
@@ -302,7 +330,7 @@ function merge_forecast_shards!(base::String; out::String=replace(base, ".sqlite
     
     for task_id in task_ids[2:end]
         #println("Merging forecast shard for task $task_id into $out")
-        src_db = SQLite.DB(src_path)
+        src_db = _open_db(src_path)
         
 
         new_entry_path = _forecast_path(base, task_id)
@@ -313,7 +341,7 @@ function merge_forecast_shards!(base::String; out::String=replace(base, ".sqlite
         
         
         # open new entry db and print the names of the table that are there
-        new_entry_db = SQLite.DB(new_entry_path)
+        new_entry_db = _open_db(new_entry_path)
 
         # print the model.base.model_string entry in the db to check whether it was stored correctly 
         for row in DBInterface.execute(new_entry_db,
@@ -335,7 +363,7 @@ function merge_forecast_shards!(base::String; out::String=replace(base, ".sqlite
     end
 
     # # print number of rows in merged db
-    # src_db = SQLite.DB(src_path)
+    # src_db = _open_db(src_path)
     # row_count = first(DBInterface.execute(src_db, "SELECT COUNT(*) FROM forecasts;"))
     # println("Number of rows in merged db after merging: ", row_count[1])
     # SQLite.close(src_db)
@@ -343,7 +371,7 @@ function merge_forecast_shards!(base::String; out::String=replace(base, ".sqlite
 
 
     # # show params where task_id == 250 
-    # src_db = SQLite.DB(src_path)
+    # src_db = _open_db(src_path)
     # for row in DBInterface.execute(src_db, "SELECT task_id, params FROM forecasts WHERE task_id = ?;", (250,))
     #     println("Params for task_id 250: ", row)
     # end
@@ -396,7 +424,7 @@ function export_forecast_csv(model,thread_Id::AbstractString, tasks, ; window_ty
     preds_blob = nothing
     for task_id in tasks
 
-        db = SQLite.DB(_forecast_merged_path(model, window_type))
+        db = _open_db(_forecast_merged_path(model, window_type))
         row = DBInterface.execute(db, "SELECT task_id,  preds FROM forecasts WHERE task_id = ?;", (task_id,))
         task_id = nothing 
         for r in row 
@@ -470,7 +498,7 @@ function export_fitted_params_csv(model, thread_Id, tasks; window_type::Abstract
     isfile(tmp) && rm(tmp; force=true)
 
     for task_id in tasks
-        db = SQLite.DB(_forecast_merged_path(model, window_type))
+        db = _open_db(_forecast_merged_path(model, window_type))
         row = DBInterface.execute(db, "SELECT task_id, params FROM forecasts WHERE task_id = ?;", (task_id,))
         got_task = nothing
         params_blob = nothing
@@ -509,7 +537,7 @@ function export_fl1_csv(model, thread_Id, tasks; window_type::AbstractString="ex
     isfile(tmp) && rm(tmp; force=true)
 
     for task_id in tasks
-        db = SQLite.DB(_forecast_merged_path(model, window_type))
+        db = _open_db(_forecast_merged_path(model, window_type))
         row = DBInterface.execute(db, "SELECT task_id, fl1 FROM forecasts WHERE task_id = ?;", (task_id,))
         got_task = nothing
         fl_blob = nothing
@@ -551,7 +579,7 @@ function export_fl2_csv(model, thread_Id, tasks; window_type::AbstractString="ex
     isfile(tmp) && rm(tmp; force=true)
 
     for task_id in tasks
-        db = SQLite.DB(_forecast_merged_path(model, window_type))
+        db = _open_db(_forecast_merged_path(model, window_type))
         row = DBInterface.execute(db, "SELECT task_id, fl2 FROM forecasts WHERE task_id = ?;", (task_id,))
         got_task = nothing
         fl_blob = nothing
@@ -605,7 +633,7 @@ function export_factors_csv(model, thread_Id, tasks; window_type::AbstractString
     isfile(tmp) && rm(tmp; force=true)
 
     for task_id in tasks
-        db = SQLite.DB(_forecast_merged_path(model, window_type))
+        db = _open_db(_forecast_merged_path(model, window_type))
         row = DBInterface.execute(db, "SELECT task_id, factors FROM forecasts WHERE task_id = ?;", (task_id,))
         got_task, blob = nothing, nothing
         for r in row
@@ -630,7 +658,7 @@ function export_states_csv(model, thread_Id, tasks; window_type::AbstractString=
     isfile(tmp) && rm(tmp; force=true)
 
     for task_id in tasks
-        db = SQLite.DB(_forecast_merged_path(model, window_type))
+        db = _open_db(_forecast_merged_path(model, window_type))
         row = DBInterface.execute(db, "SELECT task_id, states FROM forecasts WHERE task_id = ?;", (task_id,))
         got_task, blob = nothing, nothing
         for r in row

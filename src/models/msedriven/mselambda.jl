@@ -14,13 +14,16 @@ struct MSEDλModel{Fl <: Real, Fβ <: Real, Fγ <: Real} <: AbstractλMSEDrivenM
                            scale_grad::Bool = false,
                            forget_factor::T = T(0.98)) where T<:Real
 
-        specific_transformations = Function[from_R_to_pos]
-        specific_untransformations = Function[from_pos_to_R]
+        # A ∈ (0, A_MAX), B ∈ (0.5, 1): an unbounded A let the optimizer buy in-sample fit
+        # with a score loading far outside the plausible range, and B ≈ 0 pinned λ at its
+        # intercept. Both together produced forecasts of order 1e10.
+        specific_transformations = Function[from_R_to_A]
+        specific_untransformations = Function[from_A_to_R]
 
         if !random_walk
             n = length(specific_transformations)
-            append!(specific_transformations, fill(from_R_to_01, n))
-            append!(specific_untransformations, fill(from_01_to_R, n))
+            append!(specific_transformations, fill(from_R_to_051, n))
+            append!(specific_untransformations, fill(from_051_to_R, n))
         end
 
         A_guesses = T[1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]

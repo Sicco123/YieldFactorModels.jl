@@ -40,6 +40,7 @@ module YieldFactorModels
     include("models/kalman/paramoperations.jl")
     include("models/filter.jl")
     include("models/kalman/tvλdns.jl")
+    include("models/kalman/afns.jl")
 
     # Utility files
     include("utils/transformations.jl")
@@ -73,6 +74,7 @@ module YieldFactorModels
     
     # Core functions
     export run, save_results, load_data, predict, get_loss
+    export init_params_path
     export estimate!, estimate_steps!#, run_rolling_forecasts
 
     # ============================================================================
@@ -105,7 +107,7 @@ module YieldFactorModels
     Load and initialize static parameters for neural network and NS models.
     """
     function load_static_parameters!(model, model_type::String, results_location::String, thread_id::String, params)
-        static_model_name = get_static_model_type(model)
+        static_model_name = static_counterpart(model)
         try 
             
             static_params = readdlm(
@@ -121,36 +123,66 @@ module YieldFactorModels
     end
     
     """
-        load_initial_parameters!(model, model_type)
+        load_initial_parameters!(model, model_type, float_type, thread_id; simulation=false)
     
-    Load initial parameters for the specified model type, generating random
-    parameters and saving to disk if not found.
+    Load initial parameters for the specified model type, preferring this thread's own
+    file over the shared default, generating random parameters and saving to disk if
+    neither is found.
     """
 
 
-    function load_initial_parameters!(model, model_type::String, float_type::Type; simulation=false)
+    """
+        init_params_path(init_folder, model_type, thread_id; simulation=false)
+
+    The init file to read: a thread-specific one when it exists, otherwise the shared
+    default `init_params_<model_type>.csv`. Thread files are named the same way results
+    are (`init_params_1C__thread_id__7.csv`) and are written by
+    `simulation_exp_1/long_path_initializations.jl`, one per thread, so a per-thread
+    re-initialization never overwrites the default other threads still read.
+
+    When no candidate exists the plain default path is returned, which is what
+    `load_initial_parameters!` then writes its random start to.
+    """
+    function init_params_path(init_folder::String, model_type::String, thread_id::String;
+                              simulation::Bool=false)
+        # A diagonal model reads init_params_<type>-diag__thread_id__<id>.csv, and falls
+        # back to the unrestricted model's file when it has not been re-initialized yet:
+        # the off-diagonal Φ slots in it are pinned to zero on load anyway.
+        names = model_type == base_model_name(model_type) ? [model_type] :
+                                                            [model_type, base_model_name(model_type)]
+        candidates = String[]
+        for nm in names
+            base = string(init_folder, "init_params_", nm)
+            append!(candidates, simulation ?
+                [string(base, "__thread_id__", thread_id, "_simulation.csv"),
+                 string(base, "__thread_id__", thread_id, ".csv"),
+                 string(base, "_simulation.csv"),
+                 string(base, ".csv")] :
+                [string(base, "__thread_id__", thread_id, ".csv"),
+                 string(base, ".csv")])
+        end
+        i = findfirst(isfile, candidates)
+        return isnothing(i) ? last(candidates) : candidates[i]
+    end
+
+    function load_initial_parameters!(model, model_type::String, float_type::Type,
+                                      thread_id::String; simulation=false)
+        path = init_params_path(model.base.init_folder, model_type, thread_id; simulation=simulation)
         all_params = nothing
         try
-            if simulation
-                # if simulation file exists otherwise fall back to normal
-                if isfile(string(model.base.init_folder, "init_params_", model_type, "_simulation.csv"))
-                    all_params = readdlm(string(model.base.init_folder, "init_params_", model_type, "_simulation.csv"), ',')
-                else
-                    all_params = readdlm(string(model.base.init_folder, "init_params_", model_type, ".csv"), ',')
-                end
-           
-            else
-                all_params = readdlm(string(model.base.init_folder, "init_params_", model_type, ".csv"), ',')
-            end
+            all_params = readdlm(path, ',')
+            println("Initial parameters read from: $path")
         catch err
-            @warn ("Initial parameters for $(model_type) not found in $(model.base.init_folder). Writing file with random initial parameters...")
+            @warn ("Initial parameters for $(model_type) not found at $path. Writing file with random initial parameters...")
             num_params = length(get_params(model))
             println("Number of parameters: $num_params")
             all_params = rand(float_type, num_params, 1)
             # mk dir if needed 
             isdir(model.base.init_folder) || mkpath(model.base.init_folder)
-            writedlm(string(model.base.init_folder, "init_params_", model_type, ".csv"), all_params, ',')
+            writedlm(path, all_params, ',')
         end
+        # Resize stored params to this thread's N where the layout allows it.
+        all_params = reconcile_init_params(model, all_params)
         return all_params
     end
     """
@@ -233,10 +265,22 @@ module YieldFactorModels
         run_optimization::Bool=true,
         save_results_bool::Bool=true, 
         simulation::Bool=false, 
-        reestimate::Bool=true, 
-        scratch_dir::String="", 
-        seed::Int=43
+        reestimate::Bool=true,
+        scratch_dir::String="",
+        seed::Int=43,
+        analytic_score::Bool=true,
+        diagonal::Bool=false,
+        static_seed::Bool=true
     )
+
+        # Closed-form neural score: ON by default (~2x faster). Set analytic_score=false
+        # to use ForwardDiff. Only affects anchored neural models (transform_bool=true);
+        # a no-op otherwise.
+        ANALYTIC_SCORE[] = analytic_score
+
+        # false: score-driven models keep their own initialization instead of inheriting
+        # the static counterpart's per-window fit. See STATIC_SEED.
+        STATIC_SEED[] = static_seed
 
         if simulation
             window_type = "simulation"
@@ -254,24 +298,33 @@ module YieldFactorModels
         data = convert(Matrix{float_type}, data)
         maturities = convert(Vector{float_type}, maturities)
 
+        if model_type == "AFNS" || model_type == "33"
+            data ./= float_type(100)
+            maturities ./= float_type(12)
+        end
+
         # ========================================================================
         # Initialize model
         # ========================================================================
         N = length(maturities)  # Number of maturities
         M = 3                    # Number of factors
        
-        model, model_type = create_model(model_type, maturities, N, M, float_type, "$results_location$(model_type)/" )
+        model, model_type = create_model(model_type, maturities, N, M, float_type,
+                                         "$results_location$(model_type)$(diagonal ? "-diag" : "")/";
+                                         diagonal=diagonal)
  
         # ========================================================================
         # Load and set parameters
         # ========================================================================
         param_groups = get_param_groups(model, param_groups)
-        all_params = load_initial_parameters!(model, model_type, float_type; simulation=simulation)
+        all_params = load_initial_parameters!(model, model_type, float_type, thread_id; simulation=simulation)
         set_params!(model, all_params[:, 1])
         
 
         # Load static parameters if applicable
-        all_params[:,1] = load_static_parameters!(model, model_type, results_location, thread_id, all_params[:,1])
+        if STATIC_SEED[]
+            all_params[:,1] = load_static_parameters!(model, model_type, results_location, thread_id, all_params[:,1])
+        end
 
         # Convert parameters to appropriate float type
         all_params = convert(Matrix{float_type}, all_params)
@@ -303,9 +356,12 @@ module YieldFactorModels
         # ========================================================================
         if save_results_bool
             # In-sample results
-            results = predict(model, data[:, 1:in_sample_end])
+            # set_params! FIRST: estimate! leaves the model at the last point the
+            # optimizer evaluated, not at the returned optimum, so filtering before
+            # this line wrote *_filtered_insample.csv at the wrong parameters.
             set_params!(model, params)
-            
+            results = predict(model, data[:, 1:in_sample_end])
+
             save_results(model, results, loss, thread_id, "insample")
 
             loss = get_loss(model, data[:, 1:in_sample_end])
@@ -318,12 +374,15 @@ module YieldFactorModels
             loss_array = get_loss_array(model, data[:, 1:end]; K = 1)
             out_of_sample_loss_array = loss_array[in_sample_end+1:end]
 
+            # ponytail: in_sample_end == T (a full-sample fit) leaves nothing out of sample
+            if !isempty(out_of_sample_loss_array)
             # print first sum of 10 percent of out-of-sample losses, 25%, 50% of the sample and then 75 percent and 100 percent
             println("Out-of-sample loss array (first 10%): ", mean(out_of_sample_loss_array[1:Int(floor(0.1*length(out_of_sample_loss_array)))]))
             println("Out-of-sample loss array (first 25%): ", mean(out_of_sample_loss_array[1:Int(floor(0.25*length(out_of_sample_loss_array)))]))
             println("Out-of-sample loss array (first 50%): ", mean(out_of_sample_loss_array[1:Int(floor(0.5*length(out_of_sample_loss_array)))]))
             println("Out-of-sample loss array (first 75%): ", mean(out_of_sample_loss_array[1:Int(floor(0.75*length(out_of_sample_loss_array)))]))
             println("Out-of-sample loss array (full): ", mean(out_of_sample_loss_array))
+            end
 
         end
 

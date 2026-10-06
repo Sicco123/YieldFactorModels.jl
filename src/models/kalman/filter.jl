@@ -1,183 +1,180 @@
+"""
+    initialize_filter(model::AbstractKalmanModel)
+
+Start the filter at the state's unconditional moments, with a fallback for the
+case where those moments do not exist.
+
+The unconditional moments require a stable Phi. `inv(I - Phi⊗Phi)` does not error
+when Phi is explosive — it silently returns an indefinite `P`, which makes `F`
+have a negative determinant and collapses the likelihood a few observations in.
+Falling back to the one-step-ahead moments (mean and variance of the state after
+one transition from zero) keeps the prior finite, PSD, and on the model's own
+scale.
+
+Estimation never reaches the fallback: `compute_loss` gates on the same spectral
+radius for every Kalman model. It exists for `predict` and `get_loss_array`,
+which are also the paths that can be handed explosive parameters stored by an
+earlier run.
+
+TVλ has its own method below and never runs this one.
+"""
 function initialize_filter(model::AbstractKalmanModel)
     base = model.base
-    # Initialize beta with unconditional mean: (I - Phi)^(-1) * delta
-    base.beta .= (I - base.Phi) \ base.delta
 
-    # Initialize P with unconditional covariance
-    base.P .= reshape(inv(I - kron(base.Phi, base.Phi)) * vec(base.Omega_state), base.M, base.M)
-    
-    return nothing
-end
-
-function filter!(m::AbstractTVλDNSModel, y::AbstractVector{T}, cache) where T<:Real
-    if any(isnan.(y))
-        update_factor_loadings!(m, m.base.beta[4:4], m.base.Z)
-        @views mul!(m.base.y_pred, m.base.Z[:,1:3], m.base.beta[1:3])
-       
-        # Use preallocated buffers to avoid allocations
-        @views temp_beta = m.base.temp_MxN[:, 1]  # reuse temp_MxN first column
-        mul!(temp_beta, m.base.Phi, m.base.beta)
-        m.base.beta .= m.base.delta .+ temp_beta
-        
-        # Use preallocated buffers for P update
-        @views temp_P = m.base.temp_NxM[1:m.base.M, 1:m.base.M]  # reuse temp_NxM
-        mul!(temp_P, m.base.Phi, m.base.P)
-        mul!(m.base.P, temp_P, m.base.Phi')
-        m.base.P .+= m.base.Omega_state
-
-        return nothing
+    if all(isfinite, base.Phi) && all(isfinite, base.delta) && is_stable(base.Phi)
+        base.beta .= (I - base.Phi) \ base.delta
+        base.P .= reshape(inv(I - kron(base.Phi, base.Phi)) * vec(base.Omega_state), base.M, base.M)
+    else
+        base.beta .= base.delta
+        base.P .= base.Omega_state
     end
-    
-    # Error Calculation
-    update_factor_loadings!(m, m.base.beta[4:4], m.base.Z) 
-    @views mul!(m.base.y_pred, m.base.Z[:,1:3], m.base.beta[1:3])
-    m.base.v .= y .- m.base.y_pred
-    
-    @views Z_dot = m.base.Z
-    
-    dlambda_da4 = (m.lambda .- 1e-2)  # derivative of lambda w.r.t. beta4 
-
-    @views dZ1_dlambda = m.base.temp_NxM[1:m.base.N, 1]  # reuse temp_NxM for dZ1_dlambda
-    @views dZ2_dlambda = m.base.temp_NxM[1:m.base.N, 2] 
-
-    @. dZ1_dlambda =  m.z_i / m.lambda - m.z_i / (m.lambda^2 * m.base.maturities)    
-    @. dZ2_dlambda = m.base.maturities * m.z_i
-    
-    @. Z_dot[:,4] = ((m.base.beta[2] + m.base.beta[3]) * (dZ1_dlambda) + m.base.beta[3] * (dZ2_dlambda)) * dlambda_da4 
-
-    # Update F
-    m.base.F .= mul!(m.base.F, mul!(m.base.temp_NxM, Z_dot, m.base.P), Z_dot') .+ m.base.Omega_obs 
-
-    try 
-        m.base.F_inv .= inv(m.base.F)
-    catch
-        println("Error inverting F")
-        return nothing
-    end
-
-    # Kalman Gain transposed stored in 
-    m.base.temp_MxN .= mul!(m.base.temp_MxN, mul!(m.base.temp_NxM, Z_dot,  m.base.P')', m.base.F_inv)
-    @views K = m.base.temp_MxN                      # reuse temp_MxN as K
-
-
-    @views m.base.beta .+= mul!(m.base.temp_NxM[1:m.base.M, 1], K, m.base.v)
-    @views temp_beta = m.base.temp_NxM[1:m.base.M, 1]
-    mul!(temp_beta, m.base.Phi, m.base.beta)
-    m.base.beta .= m.base.delta .+ temp_beta
-
-    # Update error covariance: P = Phi * (I - K*Z) * P * Phi' + Omega_state
-    @views KZ = m.base.temp_NxM[1:m.base.M, :]               # reuse temp_NxM top M rows
-    mul!(KZ, m.base.temp_MxN, Z_dot)                    # KZ := K*Z
-    @views temp_IKZ = m.base.temp_MxN[:, 1:m.base.M]         # reuse temp_MxN first M cols
-    temp_IKZ .= m.base.In .- KZ                          # temp_IKZ := I - K*Z
-    @views temp_prod = m.base.temp_NxM[m.base.M+1:2*m.base.M, 1:m.base.M]  # reuse next M rows
-    mul!(temp_prod, temp_IKZ, m.base.P)                  # temp_prod := (I - K*Z)*P
-    mul!(KZ, m.base.Phi, temp_prod)                      # KZ := Phi*(I - K*Z)*P (reuse KZ)
-    mul!(m.base.P, KZ, m.base.Phi')                      # P := Phi*(I - K*Z)*P*Phi'
-    m.base.P .+= m.base.Omega_state                      # P += Omega_state
 
     return nothing
 end
 
-# function filter!(m::AbstractKalmanModel, y::AbstractVector{T}, cache) where T<:Real
-    
-#     if any(isnan.(y))
-#         # Prediction step only (no measurement update due to missing data)
-#         m.base.y_pred .= m.base.Z * m.base.beta
-#         m.base.beta .= m.base.delta .+ m.base.Phi * m.base.beta
-#         m.base.P .= m.base.Phi * m.base.P * m.base.Phi' .+ m.base.Omega_state
-#         return nothing
-#     end
-    
-#     # Prediction step: predict observation
-#     m.base.y_pred .= m.base.Z * m.base.beta
-    
-#     # Innovation (prediction error)
-#     m.base.v .= y .- m.base.y_pred
-    
-#     # Innovation covariance
-#     m.base.F .= m.base.Z * m.base.P * m.base.Z' .+ m.base.Omega_obs 
 
-#     try 
-#         m.base.F_inv .= inv(m.base.F)
-#     catch
-#         println("Error inverting F")
-#         return nothing
-#     end
+function initialize_filter(model::AbstractTVλDNSModel)
+    base = model.base
+    base.beta .= (I - base.Phi) \ base.delta     # δ = (I-Φ)μ, so this is μ
+    base.P .= model.Gamma
+    return nothing
+end
 
-#     # Kalman Gain
-#     K = m.base.P * m.base.Z' * m.base.F_inv
+"""
+    spectral_radius(Phi)
 
-#     # Update step: correct state estimate with measurement
-#     m.base.beta .= m.base.beta .+ K * m.base.v
-    
-#     # Update error covariance (using Joseph form for numerical stability)
-#     KZ = K * m.base.Z
-#     m.base.P .= (m.base.In .- KZ) * m.base.P * (m.base.In .- KZ)' .+ K * m.base.Omega_obs * K'
-    
-#     # Prediction step for next iteration: propagate state and covariance forward
-#     m.base.beta .= m.base.delta .+ m.base.Phi * m.base.beta
-#     m.base.P .= m.base.Phi * m.base.P * m.base.Phi' .+ m.base.Omega_state
+Largest eigenvalue modulus. `is_stable` is the stationarity check the Kalman
+methods gate on; both assume `Phi` is already known to be finite.
+"""
+spectral_radius(Phi::AbstractMatrix) = maximum(abs, eigvals(Phi))
+is_stable(Phi::AbstractMatrix) = spectral_radius(Phi) < 1
 
-#     return nothing
-# end
+"""
+    predict_observation!(m)
+
+Default (DNS/1C): loadings are fixed by lambda, so `y_pred = Z * beta`.
+"""
+function predict_observation!(m::AbstractKalmanModel)
+    mul!(m.base.y_pred, m.base.Z, m.base.beta)
+    return nothing
+end
+
+# TVλ: lambda is the 4th state, so the loadings are rebuilt from beta[4] every
+# step and only the first three columns enter the prediction.
+function predict_observation!(m::AbstractTVλDNSModel)
+    @views update_factor_loadings!(m, m.base.beta[4:4], m.base.Z)
+    @views mul!(m.base.y_pred, m.base.Z[:, 1:3], m.base.beta[1:3])
+    return nothing
+end
+
+"""
+    update_measurement_jacobian!(m)
+
+Write any state-dependent columns of the measurement matrix that the update needs
+beyond the loadings themselves. Only TVλ has any; for every other model `base.Z`
+is already the full Jacobian.
+"""
+update_measurement_jacobian!(::AbstractKalmanModel) = nothing
+
+# TVλ: extended-Kalman linearization of y_pred with respect to the lambda state,
+# stored in the 4th column of Z. Uses the first two columns of temp_NxM as
+# scratch
+function update_measurement_jacobian!(m::AbstractTVλDNSModel)
+    base = m.base
+    λ = m.lambda[1]
+    dlambda_da4 = dtvλ_link(λ)   # dλ/dβ₄ for the exponential link (see tvλdns.jl)
+
+    @views dZ1_dlambda = base.temp_NxM[1:base.N, 1]
+    @views dZ2_dlambda = base.temp_NxM[1:base.N, 2]
+
+    @. dZ1_dlambda = (m.z_i - base.Z[:, 2]) / λ
+    @. dZ2_dlambda = base.maturities * m.z_i
+
+    @. base.Z[:, 4] = ((base.beta[2] + base.beta[3]) * (dZ1_dlambda) + base.beta[3] * (dZ2_dlambda)) * dlambda_da4
+    return nothing
+end
+
+"""
+    filter!(m::AbstractKalmanModel, y, cache)
+
+One Kalman step, shared by every Kalman model. What differs per model lives in
+`predict_observation!` and `update_measurement_jacobian!`; the prediction and
+measurement updates below were identical in all three implementations.
+
+`cache` is unused here (the filter works out of the model's own preallocated
+buffers) and is kept for signature compatibility with the score-driven `filter`.
+"""
 
 function filter!(m::AbstractKalmanModel, y::AbstractVector{T}, cache) where T<:Real
-    if any(isnan.(y))        
-        m.base.y_pred .= m.base.Z * m.base.beta
+    base = m.base
+    predict_observation!(m)
 
-        # Use preallocated buffers to avoid allocations
-        @views temp_beta = m.base.temp_MxN[:, 1]  # reuse temp_MxN first column
-        mul!(temp_beta, m.base.Phi, m.base.beta)
-        m.base.beta .= m.base.delta .+ temp_beta
-        
+    if any(isnan, y)
+        # Prediction step only (no measurement update due to missing data)
+        @views temp_beta = base.temp_MxN[:, 1]  # reuse temp_MxN first column
+        mul!(temp_beta, base.Phi, base.beta)
+        base.beta .= base.delta .+ temp_beta
+
         # Use preallocated buffers for P update
-        @views temp_P = m.base.temp_NxM[1:m.base.M, 1:m.base.M]  # reuse temp_NxM
-        mul!(temp_P, m.base.Phi, m.base.P)
-        mul!(m.base.P, temp_P, m.base.Phi')
-        m.base.P .+= m.base.Omega_state
+        @views temp_P = base.temp_NxM[1:base.M, 1:base.M]  # reuse temp_NxM
+        mul!(temp_P, base.Phi, base.P)
+        mul!(base.P, temp_P, base.Phi')
+        base.P .+= base.Omega_state
         return nothing
     end
-    
+
     # Error Calculation
-    mul!(m.base.y_pred, m.base.Z, m.base.beta)
-    m.base.v .= y .- m.base.y_pred
-   
-    # Update F
-    m.base.F .= mul!(m.base.F, mul!(m.base.temp_NxM, m.base.Z, m.base.P), m.base.Z') .+ m.base.Omega_obs 
+    base.v .= y .- base.y_pred
+    update_measurement_jacobian!(m)
 
-    try 
-        m.base.F_inv .= inv(m.base.F)
-    catch
-        println("Error inverting F")
-        m.base.F_inv .= Inf
+    # Update F
+    base.F .= mul!(base.F, mul!(base.temp_NxM, base.Z, base.P), base.Z') .+ base.Omega_obs
+
+    copyto!(base.F_chol, base.F)
+    C = cholesky!(Symmetric(base.F_chol); check=false)
+    if !issuccess(C)
+        base.logdetF[1] = NaN
+        fill!(base.Finv_v, NaN)
         return nothing
     end
+    base.logdetF[1] = logdet(C)
 
-    # Kalman Gain transposed stored in 
-    m.base.temp_MxN .= mul!(m.base.temp_MxN, mul!(m.base.temp_NxM, m.base.Z,  m.base.P')', m.base.F_inv)
-    @views K = m.base.temp_MxN                      # reuse temp_MxN as K
+    # F^-1 v, the only piece of F^-1 the log-likelihood needs (see get_loss)
+    copyto!(base.Finv_v, base.v)
+    ldiv!(C, base.Finv_v)
 
+    # Kalman gain K = P Z' F^-1, formed as (F^-1 (Z P'))' since F is symmetric
+    mul!(base.temp_NxM, base.Z, base.P')
+    ldiv!(C, base.temp_NxM)
+    transpose!(base.temp_MxN, base.temp_NxM)
+    @views K = base.temp_MxN                             # reuse temp_MxN as K
 
-    @views m.base.beta .+= mul!(m.base.temp_NxM[1:m.base.M, 1], K, m.base.v)
-    @views temp_beta = m.base.temp_NxM[1:m.base.M, 1]
-    mul!(temp_beta, m.base.Phi, m.base.beta)
-    m.base.beta .= m.base.delta .+ temp_beta
-    
+    @views base.beta .+= mul!(base.temp_NxM[1:base.M, 1], K, base.v)
+    @views temp_beta = base.temp_NxM[1:base.M, 1]
+    mul!(temp_beta, base.Phi, base.beta)
+    base.beta .= base.delta .+ temp_beta
+
     # Update error covariance: P = Phi * (I - K*Z) * P * Phi' + Omega_state
-    @views KZ = m.base.temp_NxM[1:m.base.M, :]               # reuse temp_NxM top M rows
-    mul!(KZ, m.base.temp_MxN, m.base.Z)                    # KZ := K*Z
-    @views temp_IKZ = m.base.temp_MxN[:, 1:m.base.M]         # reuse temp_MxN first M cols
-    temp_IKZ .= m.base.In .- KZ                          # temp_IKZ := I - K*Z
-    @views temp_prod = m.base.temp_NxM[m.base.M+1:2*m.base.M, 1:m.base.M]  # reuse next M rows
-    mul!(temp_prod, temp_IKZ, m.base.P)                  # temp_prod := (I - K*Z)*P
-    mul!(KZ, m.base.Phi, temp_prod)                      # KZ := Phi*(I - K*Z)*P (reuse KZ)
-    mul!(m.base.P, KZ, m.base.Phi')                      # P := Phi*(I - K*Z)*P*Phi'
-    m.base.P .+= m.base.Omega_state                      # P += Omega_state
+    @views KZ = base.temp_NxM[1:base.M, :]               # reuse temp_NxM top M rows
+    mul!(KZ, base.temp_MxN, base.Z)                      # KZ := K*Z
+    @views temp_IKZ = base.temp_MxN[:, 1:base.M]         # reuse temp_MxN first M cols
+    temp_IKZ .= base.In .- KZ                            # temp_IKZ := I - K*Z
+    @views temp_prod = base.temp_NxM[base.M+1:2*base.M, 1:base.M]  # reuse next M rows
+    mul!(temp_prod, temp_IKZ, base.P)                    # temp_prod := (I - K*Z)*P
+    mul!(KZ, base.Phi, temp_prod)                        # KZ := Phi*(I - K*Z)*P (reuse KZ)
+    mul!(base.P, KZ, base.Phi')                          # P := Phi*(I - K*Z)*P*Phi'
+    base.P .+= base.Omega_state                          # P += Omega_state
 
     return nothing
 end
 
+
+
+loss_objective(::AbstractKalmanModel) = :loglik
+loss_objective(::AbstractTVλDNSModel) = :sse
+
+
+const OBJECTIVE = Ref(:auto)
 
 function get_loss(model::AbstractKalmanModel, data::Matrix{T}) where T<:Real
     base = model.base
@@ -186,13 +183,19 @@ function get_loss(model::AbstractKalmanModel, data::Matrix{T}) where T<:Real
     
     loglik = T(0.0)
     logdet_2pi = base.N * log(2π)
-    
+    objective = OBJECTIVE[] === :auto ? loss_objective(model) : OBJECTIVE[]
+
+    # t runs to nobs: every observation is filtered and, past the t=1 burn-in
+    # (whose innovation is against the unconditional prior), scored. The loop
+    # previously stopped at nobs-1, so the last observation of every window —
+    # the forecast origin — never informed the parameters.
     for t in 1:nobs-1
-        filter!(model, data[:, t], cache)
-        
-        try 
+        @views filter!(model, data[:, t], cache)
+
+        try
             if t > 1
-                loglik -= T(0.5) * (logdet(base.F) + (base.v' * base.F_inv * base.v)[1] + logdet_2pi)
+                loglik -= objective === :sse ? dot(base.v, base.v) :
+                          T(0.5) * (base.logdetF[1] + dot(base.v, base.Finv_v) + logdet_2pi)
             end
         catch
             println("Error computing loglik at time $t")
@@ -206,6 +209,25 @@ function get_loss(model::AbstractKalmanModel, data::Matrix{T}) where T<:Real
     end
    
     return loglik
+end
+
+
+function rrmse_vs_rw(model::AbstractKalmanModel, data::AbstractMatrix{T}) where T<:Real
+    base = model.base
+    cache = initialize_filter(model)
+
+    sse_model = zero(T)
+    sse_rw = zero(T)
+    for t in 1:size(data, 2)-1
+        @views filter!(model, data[:, t], cache)
+        t > 1 || continue
+        y = @view data[:, t]
+        yprev = @view data[:, t-1]
+        (any(isnan, y) || any(isnan, yprev)) && continue
+        sse_model += dot(base.v, base.v)          # v = y_t - E[y_t | t-1], set by filter!
+        sse_rw += sum(abs2, y .- yprev)
+    end
+    return sqrt(sse_model / sse_rw)
 end
 
 function get_loss_array(model::AbstractKalmanModel, data::Matrix{T}; K::Int=1 ) where T<:Real

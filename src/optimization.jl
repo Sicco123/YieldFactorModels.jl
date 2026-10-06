@@ -22,7 +22,148 @@ function compute_loss(model::AbstractYieldFactorModel, data, params)
     return -loss
 end
 
+"""
+    lambda_start(model)
 
+λ the filter is initialized at, i.e. what `update_factor_loadings!` sees at t = 1.
+
+Score-driven λ models start the driver at its unconditional mean (`set_params!` sets
+`gamma .= omega`, and ν = (1-B)ω), so it is a function of ω alone. TVλ starts the state
+at `(I - Φ)\\δ` (`initialize_filter`) and applies `tvλ_link` to its fourth element; since
+TVλ's `set_params!` builds δ = (I-Φ)μ, this is just μ[4]. The caller must have checked Φ
+is stable first.
+"""
+lambda_start(model::AbstractλMSEDrivenModel) = 1e-2 + exp(model.base.omega[1])
+lambda_start(model::AbstractTVλDNSModel) =
+    tvλ_link(((I - model.base.Phi) \ model.base.delta)[4])
+
+"""
+    compute_loss(model::AbstractλMSEDrivenModel, data, params)
+
+λ models only: reject a starting λ above `LAMBDA_START_MAX` before filtering.
+
+An optimum at λ₁ > 0.5 is not a fit, it is the loadings collapsing to level-only (see
+LAMBDA_START_MAX). The penalty rises with λ₁ so finite differences point back toward
+smaller ω; a flat one would leave a zero gradient and stop the optimizer where it is.
+Any start that ends here scores -1e10 in `estimate_steps!`, so it can never win the
+multi-start comparison against a run with a plausible λ.
+"""
+function compute_loss(model::AbstractλMSEDrivenModel, data, params)
+    penalty = convert(eltype(params), 1e10)
+
+    transformed_params = transform_params(model, params)
+    set_params!(model, transformed_params)
+
+    λ1 = lambda_start(model)
+    isfinite(λ1) || return penalty
+    λ1 < LAMBDA_START_MAX || return penalty * λ1
+
+    return -get_loss(model, data)
+end
+
+"""
+    compute_loss(model::AbstractKalmanModel, data, params)
+
+Kalman models: reject an explosive state transition before filtering, and never
+hand the optimizer a non-finite value.
+
+Only the diagonal of `Phi` is bounded to (-1, 1) — by `from_R_to_11` for DNS/TVλ,
+and for AFNS only the diagonal of `K^P` is held positive, with `Phi = exp(-K^P dt)`.
+The off-diagonals are free in both cases, so nothing stops the optimizer walking
+into a spectral radius above 1. It has done exactly that in practice: a DNS window
+converged at rho = 1.000175 with an unconditional mean of [3082, 2594, 3297], and
+multi-step forecasts revert toward that, which is how a good in-sample likelihood
+turns into a useless forecast.
+
+Filtering there is meaningless, so it is rejected before the filter runs, with a
+penalty increasing in the spectral radius — a flat penalty would give a zero
+finite-difference gradient and the optimizer would stop at iteration 0.
+
+The non-finite guards matter for the same reason they do for TVλ: `get_loss`
+returns `-Inf` when the filter degenerates, which the plain `-loss` of the generic
+method turns into `+Inf`. Optim differentiates by finite differences, so
+`(Inf - Inf)/h = NaN` poisons the gradient and the next iterate is all NaN.
+
+TVλ has its own more specific method, which adds a lambda-start gate on top of this.
+"""
+function compute_loss(model::AbstractKalmanModel, data, params)
+    penalty = convert(eltype(params), 1e10)
+
+    all(isfinite, params) || return penalty
+
+    transformed_params = transform_params(model, params)
+    all(isfinite, transformed_params) || return penalty
+
+    set_params!(model, transformed_params)
+
+    # AFNS builds Phi through a matrix exponential and fills it with NaN when that
+    # fails, so check finiteness before asking for eigenvalues.
+    all(isfinite, model.base.Phi) || return penalty
+
+    rho = spectral_radius(model.base.Phi)
+    rho < 1 || return penalty * rho
+
+    loss = get_loss(model, data)
+
+    return isfinite(loss) ? -loss : penalty
+end
+
+"""
+    compute_loss(model::AbstractTVλDNSModel, data, params)
+
+TVλ only: same loss, but never hand the optimizer a non-finite value.
+
+`get_loss` returns `-Inf` whenever the filter degenerates, which turns into `+Inf`
+here. Optim differentiates this objective by finite differences, so
+`(Inf - Inf)/h = NaN` poisons the gradient, the next iterate is all NaN, and
+`initialize_filter` then throws `ArgumentError: matrix contains Infs or NaNs`.
+
+The usual cause is an explosive Phi: only its diagonal is bounded to (-1, 1), so
+the initialization (the near-unit-root factor block plus the lambda row/column, both
+from TVλ's own init CSV) frequently starts outside the stationary region. Filtering there is
+meaningless, so it is rejected before the filter runs, with a penalty increasing in
+the spectral radius — a flat penalty would give a zero finite-difference gradient
+and the optimizer would stop at iteration 0 with the initial parameters.
+"""
+function compute_loss(model::AbstractTVλDNSModel, data, params)
+    penalty = convert(eltype(params), 1e10)
+
+    all(isfinite, params) || return penalty
+
+    transformed_params = transform_params(model, params)
+    all(isfinite, transformed_params) || return penalty
+
+    set_params!(model, transformed_params)
+
+    # set_params! NaNs Phi when Gamma is numerically singular; that cannot go to eigvals.
+    all(isfinite, model.base.Phi) || return penalty
+
+    # Non-stationary: penalize, and keep a gradient pointing back into the stable region.
+    # Ansley-Kohn makes this unreachable, but it is cheap and guards numerical drift.
+    rho = spectral_radius(model.base.Phi)
+    rho < 1 || return penalty * rho
+
+    # Same λ₁ gate as the score-driven λ models, and the same λ = 1e-2 + exp(γ) link,
+    # so it fires on the same μ₄; only reachable once Φ is stable. This is the only
+    # thing bounding λ from above — the link has no cap of its own (see tvλdns.jl).
+    λ1 = lambda_start(model)
+    isfinite(λ1) || return penalty
+    λ1 < LAMBDA_START_MAX || return penalty * λ1
+
+    loss = get_loss(model, data)
+
+    return isfinite(loss) ? -loss : penalty
+end
+
+
+
+"""
+    trace_callback(model, data, show_every)
+
+Optim callback printing an extra diagnostic next to the trace's `f(x)`, or `nothing`
+to leave the trace alone. Only TVλ defines a body (see tvλdns.jl).
+"""
+trace_callback(::AbstractYieldFactorModel, data, show_every::Int) = nothing
 
 """
     try_initializations(best_params, model::AbstractYieldFactorModel)
@@ -192,7 +333,7 @@ function estimate_steps!(
     
   
     # Set up optimizer configurations
-    optimizer_dict = _create_optimizer_dict(opts, optimizers, T; printing=printing)
+    optimizer_dict = _create_optimizer_dict(opts, optimizers, T; printing=printing, model=model, data=data)
 
 
     if printing
@@ -255,9 +396,6 @@ function estimate_steps!(
                     abort_group = true
                     break
                 end
-
-                # garbage collect 
-                GC.gc()
             end
             
             # Exit if error occurred
@@ -436,7 +574,10 @@ end
 
 Create dictionary mapping parameter groups to optimizer configurations.
 """
-function _create_optimizer_dict(opts, optimizers, T; printing::Bool=true)
+function _create_optimizer_dict(opts, optimizers, T; printing::Bool=true, model=nothing, data=nothing)
+    # Per-model extra trace line (TVλ prints RRMSE vs the random walk); nothing otherwise.
+    cb(every) = model === nothing ? nothing : trace_callback(model, data, every)
+
     if opts === nothing || optimizers === nothing
         # Default optimization configurations
         opt1 = Optim.Options(
@@ -445,6 +586,7 @@ function _create_optimizer_dict(opts, optimizers, T; printing::Bool=true)
             f_abstol = 1e-6,
             show_trace = printing,
             show_every = 100,
+            callback = cb(100),
             store_trace = false,
             extended_trace = false,
             allow_f_increases = true
@@ -455,7 +597,8 @@ function _create_optimizer_dict(opts, optimizers, T; printing::Bool=true)
             g_tol = 1e-6,
             f_abstol = 1e-6,
             show_trace = printing,
-            show_every = 100,
+            show_every = 1,
+            callback = cb(1),
             store_trace = false,
             extended_trace = false,
             allow_f_increases = false
@@ -465,28 +608,48 @@ function _create_optimizer_dict(opts, optimizers, T; printing::Bool=true)
             iterations = 5000,
             show_trace = printing,
             show_every = 100,
+            callback = cb(100),
             store_trace = false
         )
         
         opt5 = Optim.Options(
-            iterations = 10000,
+            iterations = 5000,
+                g_tol = 1e-6,
+            f_abstol = 1e-6,
             show_trace = printing,
             show_every = 100,
-            store_trace = false
+            callback = cb(100),
+            store_trace = false,
+            extended_trace = false,
+            allow_f_increases = true
+        )
+        
+        opt6 = Optim.Options(
+            iterations = 0,
+            g_tol = 1e-6,
+            f_abstol = 1e-6,
+            show_trace = printing,
+            show_every = 100,
+            callback = cb(100),
+            store_trace = false,
+            extended_trace = false,
+            allow_f_increases = true
         )
         
         # Default optimizers
         optimizer1 = Optim.NelderMead()
-        optimizer2 = Optim.LBFGS(linesearch = LineSearches.BackTracking(order=3))
+        optimizer2 = Optim.LBFGS(linesearch = LineSearches.BackTracking(order=3))# LineSearches.BackTracking(order=3))
         optimizer3 = Optim.Adam(alpha = T(0.001))
         optimizer4 = Optim.NelderMead()
+        optimizer5 = Optim.NelderMead()
+        optimizer6 = Optim.NelderMead()
         
         return Dict(
             "1" => (optimizer1, opt1, "NelderMead"),
             "2" => (optimizer2, opt2, "LBFGS"), #LBFGS
             "3" => (optimizer3, opt3, "Adam"),
             "4" => (optimizer4, opt1, "NelderMead"),
-            "5" => (optimizer3, opt5, "Adam-Long")
+            "5" => (optimizer5, opt5, "NelderMead")
         )
     else
         return opts  # User-provided configurations

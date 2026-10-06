@@ -2,6 +2,7 @@
 abstract type AbstractKalmanModel <: AbstractYieldFactorModel end
 abstract type AbstractDNSModel <: AbstractKalmanModel end
 abstract type AbstractTVλDNSModel <: AbstractKalmanModel end
+abstract type AbstractAFNSModel <: AbstractKalmanModel end
 
 struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
     maturities::Vector{Fl}
@@ -25,7 +26,9 @@ struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
     y_pred::Vector{Fβ}
     v::Vector{Fβ}
     F::Matrix{Fβ}
-    F_inv::Matrix{Fβ}
+    F_chol::Matrix{Fβ}      # Cholesky factor of F, taken in place each step
+    Finv_v::Vector{Fβ}      # F^-1 v, for the log-likelihood's quadratic form
+    logdetF::Vector{Fβ}     # log|F| from that same factorization (length 1)
     temp_NxM::Matrix{Fβ}
     temp_MxN::Matrix{Fβ}
 
@@ -64,7 +67,9 @@ struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
         y_pred = zeros(Fl, N)
         v = zeros(Fl, N)
         F = zeros(Fl, N, N)
-        F_inv = zeros(Fl, N, N)
+        F_chol = zeros(Fl, N, N)
+        Finv_v = zeros(Fl, N)
+        logdetF = zeros(Fl, 1)
         temp_NxM = zeros(Fl, N, M)
         temp_MxN = zeros(Fl, M, N)
 
@@ -119,13 +124,14 @@ struct KalmanBaseModel{Fl<:Real,Fβ<:Real} <: AbstractYieldFactorModel
             phi_untransforms...
         ]
 
-        init_folder    = "YieldFactorModels.jl/initializations/$(model_string)/"
+        init_folder    = "YieldFactorModels.jl/initializations/$(base_model_name(model_string))/"
         results_folder = results_location #"YieldFactorModels.jl/results/$(model_string)/"
         flat_params = zeros(Fl, length(transformations))
         
         return new{Fl,Fl}(maturities, N, M, L, Z, beta, Phi, delta, gamma,
-                              Omega_state, Omega_obs, P, In, y_pred, v, F, F_inv, temp_NxM, temp_MxN,
-                              transformations, untransformations, flat_params, 
+                              Omega_state, Omega_obs, P, In, y_pred, v, F, F_chol, Finv_v, logdetF,
+                              temp_NxM, temp_MxN,
+                              transformations, untransformations, flat_params,
                               init_folder, results_folder, model_string )
     end
 
@@ -153,9 +159,11 @@ function get_param_groups(model::AbstractKalmanModel, param_groups::Vector{Strin
     if length(param_groups) == length_total_params
         return param_groups
     else
-        println("Default param groups assigned.")
-        return vcat(fill("1", length_total_params))
+        println("Default param groups assigned (group \"2\": LBFGS).")
+        return pin_diagonal_groups!(model, fill("2", length_total_params))
     end
 end
+
+
 
 

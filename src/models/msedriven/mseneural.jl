@@ -30,30 +30,31 @@ struct MSEDNeuralModel{Fl <: Real, Fβ <: Real, Fγ <: Real, F1, F2} <: Abstract
         L = 3 * net_size * 2
         
         # Create duplicator based on dynamics
+        # A ∈ (0, A_MAX), B ∈ (0.5, 1) — see the note in mselambda.jl.
         if dynamics == "scalar"
             # All parameters share: [1, 1, 1, ..., 1]
             duplicator = vcat([fill(i, net_size*3) for i in 1:2]...)
-        
-            append!(specific_transformations, fill(from_R_to_pos, 2))
-            append!(specific_untransformations, fill(from_pos_to_R, 2))
+
+            append!(specific_transformations, fill(from_R_to_A, 2))
+            append!(specific_untransformations, fill(from_A_to_R, 2))
         elseif dynamics == "block_diag"
             # Two blocks: [1,1,1, 2,2,2, 3,3,3, 4,4,4, 5,5,5, 6,6,6]
             duplicator = vcat([fill(i, net_size) for i in 1:6]...)
-            append!(specific_transformations, fill(from_R_to_pos, 6))
-            append!(specific_untransformations, fill(from_pos_to_R, 6))
+            append!(specific_transformations, fill(from_R_to_A, 6))
+            append!(specific_untransformations, fill(from_A_to_R, 6))
         elseif dynamics == "diag"
             # No sharing: [1, 2, 3, 4, ..., L]
             duplicator = collect(1:L)
-            append!(specific_transformations, fill(from_R_to_pos, L))
-            append!(specific_untransformations, fill(from_pos_to_R, L))
+            append!(specific_transformations, fill(from_R_to_A, L))
+            append!(specific_untransformations, fill(from_A_to_R, L))
         else
             error("dynamics must be 'scalar', 'block_diag' or 'diag'")
         end
 
         if !random_walk
             n = length(specific_transformations)
-            append!(specific_transformations, fill(from_R_to_01, n))
-            append!(specific_untransformations, fill(from_01_to_R, n))
+            append!(specific_transformations, fill(from_R_to_051, n))
+            append!(specific_untransformations, fill(from_051_to_R, n))
         end
 
         A_guesses = T[1e-6, 1e-5, 1e-4, 1e-3]
@@ -134,25 +135,41 @@ end
 
 
 
+# Hand-rolled forward of the fixed 1→3→1 tanh MLP (net_size = 3, no output bias),
+# writing the N outputs straight into `dest`. Mathematically identical to the Lux
+# Chain the model is built from, but allocation-free — Lux's per-call allocations
+# were a hot-loop cost (one call per net per time step). `g` is the 9-element
+# parameter view: g[1:3] = hidden weights, g[4:6] = hidden biases, g[7:9] = output
+# weights (matching shapeγ).
+@inline function _net3_forward!(dest, g, net_input)
+    @inbounds @simd for j in eachindex(dest)
+        xj = net_input[1, j]
+        dest[j] = g[7]*tanh(g[1]*xj + g[4]) +
+                  g[8]*tanh(g[2]*xj + g[5]) +
+                  g[9]*tanh(g[3]*xj + g[6])
+    end
+    return dest
+end
+
 @inline function update_factor_loadings!(
-    model::AbstractNeuralMSEDrivenModel, 
-    gamma::AbstractVector{T}, 
+    model::AbstractNeuralMSEDrivenModel,
+    gamma::AbstractVector{T},
     Z::AbstractMatrix{R}
 ) where {T <: Real, R <: Real}
-    
+
 
     # Pre-compute views to avoid repeated indexing
     z2 = @view Z[:, 2]
     z3 = @view Z[:, 3]
-    
+
     # Set first column to ones if needed (more robust check)
     if Z[1, 1] != one(T)
         Z[:, 1] .= one(T)
     end
-    
-    z2 .= model.net1(@view gamma[1:9])'
-    z3 .= model.net2(@view gamma[10:18])'
-    #println(typeof(gamma))
+
+    _net3_forward!(z2, @view(gamma[1:9]),  model.net_input)
+    _net3_forward!(z3, @view(gamma[10:18]), model.net_input)
+
     # Transform
     transform_net_1!(z2, model.net_input, Val(model.transform_bool))
     transform_net_2!(z3, model.net_input, Val(model.transform_bool))

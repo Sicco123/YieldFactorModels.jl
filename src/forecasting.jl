@@ -161,14 +161,15 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
                 temp_forecast_data = hcat(data[:, span:task_id], fill(NaN, size(data,1), forecast_horizon-1))
 
                 if reestimate
+                    window = data[:, span:task_id]
                     t = @elapsed begin
-                        _, loss, params, _ = run_estimation!(model, data, task_id, all_params,
+                        _, loss, params, _ = run_estimation!(model, window, size(window, 2), all_params,
                                                              param_groups, max_group_iters, group_tol; printing=false)
                     end
                     est_total_time += t
                     est_count += 1
                 else
-                    # try reading from database 
+                    # try reading from database
                     # if database exists 
                     params = read_params_from_db(model, task_id, all_params; window_type=window_type)[:,1]
                    
@@ -194,9 +195,6 @@ function run_forecast_window_database(model::AbstractYieldFactorModel, data::Abs
         finally
             _release_task_lock(lockdir)
         end
-
-        # collect garbage 
-        GC.gc()
     end
 
     # merge only if all shards exist
@@ -274,7 +272,9 @@ function run_forecast_no_window_database(model::AbstractYieldFactorModel, data::
         writedlm(io, all_results', ',')
     end
 
-    writedlm(string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id, "__out_params.csv"), params, ',')
+    writedlm(string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id, "__out_params.csv"), natural_params(model), ',')
+
+    save_transformed_params(model, string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id, "__out_params_transformed.csv"))
 
     writedlm(string(model.base.results_folder, model.base.model_string, "__thread_id__", thread_Id, "__factors_filtered_outofsample.csv"), factors_filtered_outofsample, ',')
     

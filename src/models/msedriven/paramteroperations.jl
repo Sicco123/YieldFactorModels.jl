@@ -54,6 +54,7 @@ function set_params!(model::AbstractMSEDrivenModel, params::AbstractVector)
 
     len_Phi = length(base.Phi)
     base.Phi .= reshape(params[index:index + len_Phi - 1], size(base.Phi))
+    is_diagonal(model) && (base.Phi .= Diagonal(base.Phi))
 
     # Set beta, gamma, mu, nu accordingly
     base.beta .= base.delta
